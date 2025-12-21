@@ -5,7 +5,7 @@ import sqlite3
 import logging
 from dataclasses import dataclass, asdict
 from io import BytesIO
-from typing import List, Dict
+from typing import List, Tuple, Optional, Dict
 from datetime import datetime
 import matplotlib.pyplot as plt
 
@@ -21,28 +21,56 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V5_4")
+logger = logging.getLogger("PipeCraft_Pro_V6_0")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 5.4",
+    page_title="Rohrbau Profi 6.0",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Minimalistisches CSS (Nur noch für Abstände, keine bunten Boxen mehr)
 st.markdown("""
 <style>
     .main { background-color: #f8f9fa; }
     h1, h2, h3 { color: #1e293b; font-family: 'Segoe UI', sans-serif; }
     
-    /* Metriken Styling vereinheitlichen */
+    /* Boxen Styles */
+    .success-box {
+        padding: 20px;
+        background-color: #dcfce7;
+        color: #166534;
+        border-radius: 8px;
+        border-left: 5px solid #22c55e;
+        margin: 10px 0;
+        text-align: center;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .error-box {
+        padding: 20px;
+        background-color: #fee2e2;
+        color: #991b1b;
+        border-radius: 8px;
+        border-left: 5px solid #ef4444;
+        margin: 10px 0;
+        text-align: center;
+    }
+    .info-box {
+        padding: 15px;
+        background-color: #eff6ff;
+        color: #1e40af;
+        border-radius: 6px;
+        border-left: 4px solid #3b82f6;
+        margin-bottom: 10px;
+    }
+    
+    /* Metriken hervorheben */
     div[data-testid="stMetric"] {
         background-color: #ffffff;
         border: 1px solid #e2e8f0;
         border-radius: 8px;
-        padding: 15px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        padding: 10px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -150,6 +178,8 @@ class SavedCut:
     timestamp: str
 
 class PipeCalculator:
+    """Zentrale Logik (Erweitert für V6.0)."""
+    
     def __init__(self, df: pd.DataFrame):
         self.df = df
 
@@ -192,6 +222,47 @@ class PipeCalculator:
             u_val = (r_stub * 2 * math.pi) * (angle / 360)
             table_data.append({"Winkel": f"{angle}°", "Tiefe (mm)": round(t_val, 1), "Umfang (mm)": round(u_val, 1)})
         return pd.DataFrame(table_data)
+
+    # --- NEU IN V6.0: ETAGEN RECHNER ---
+    def calculate_2d_offset(self, dn: int, offset: float, angle: float) -> Dict[str, float]:
+        """Berechnet eine 2D Etage."""
+        row = self.get_row(dn)
+        r = float(row['Radius_BA3'])
+        rad = math.radians(angle)
+        
+        try:
+            hypotenuse = offset / math.sin(rad)
+            run = offset / math.tan(rad)
+        except ZeroDivisionError:
+            return {"error": "Winkel darf nicht 0 sein"}
+
+        z_mass = r * math.tan(rad / 2)
+        cut_length = hypotenuse - (2 * z_mass)
+        
+        return {
+            "hypotenuse": hypotenuse,
+            "run": run,
+            "z_mass_single": z_mass,
+            "cut_length": cut_length,
+            "offset": offset,
+            "angle": angle
+        }
+
+    def calculate_rolling_offset(self, dn: int, roll: float, set_val: float, height: float = 0.0) -> Dict[str, float]:
+        """Berechnet eine Raum-Etage."""
+        diag_base = math.sqrt(roll**2 + set_val**2)
+        travel = math.sqrt(diag_base**2 + height**2)
+        
+        try:
+            required_angle = math.degrees(math.acos(diag_base / travel)) if travel != 0 else 0
+        except:
+            required_angle = 0
+        
+        return {
+            "travel": travel,
+            "diag_base": diag_base,
+            "angle_calc": required_angle
+        }
 
 class HandbookCalculator:
     BOLT_DATA = {
@@ -247,6 +318,36 @@ class Visualizer:
         ax.set_ylabel("Tiefe (mm)")
         ax.grid(True, linestyle='--', alpha=0.5)
         plt.tight_layout()
+        return fig
+
+    @staticmethod
+    def plot_rolling_offset_3d(roll: float, set_val: float, height: float, travel: float) -> plt.Figure:
+        """Erzeugt eine 3D-Drahtgitter-Ansicht der Etage (V6.0)."""
+        fig = plt.figure(figsize=(6, 5))
+        ax = fig.add_subplot(111, projection='3d')
+        
+        # Punkte
+        x = [0, roll, roll, 0, 0, 0, roll, roll]
+        y = [0, 0, set_val, set_val, 0, set_val, set_val, 0]
+        z = [0, 0, 0, 0, height, height, height, height]
+        
+        # Die Rohrleitung (Travel) von (0,0,0) nach (Roll, Set, Height)
+        ax.plot([0, roll], [0, set_val], [0, height], color='red', linewidth=3, label='Rohrleitung (Mitte)')
+        
+        # Hilfslinien (Die Box)
+        ax.plot([0, roll], [0, 0], [0, 0], 'k--', alpha=0.3)
+        ax.plot([roll, roll], [0, set_val], [0, 0], 'k--', alpha=0.3)
+        ax.plot([0, roll], [0, set_val], [0, 0], 'b:', alpha=0.5, label='Diagonale Boden')
+        ax.plot([roll, roll], [set_val, set_val], [0, height], 'k--', alpha=0.3)
+        
+        ax.set_xlabel('Roll (Seite)')
+        ax.set_ylabel('Set (Tiefe)')
+        ax.set_zlabel('Height (Höhe)')
+        ax.legend()
+        
+        try: ax.set_box_aspect([roll, set_val, height]) 
+        except: pass
+            
         return fig
 
 class Exporter:
@@ -353,7 +454,6 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
 
             st.divider()
             if final < 0:
-                # DESIGN FIX: Native Error Box statt Custom HTML
                 st.error(f"ACHTUNG: Negativmaß! Abzüge ({total:.1f}) > Rohr ({raw_len:.1f})")
             else:
                 st.success(f"Sägelänge: {final:.1f} mm")
@@ -377,25 +477,85 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                 st.rerun()
 
 def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
-    st.subheader("📐 Geometrie & Schablonen")
-    t_stutz, t_bogen = st.tabs(["🔥 Stutzen-Schablone", "🔄 Bogen-Rechner"])
+    """
+    NEU V6.0: Umfassendes Geometrie-Modul mit 4 Modi.
+    """
+    st.subheader("📐 Geometrie V6.0")
     
-    with t_stutz:
-        c1, c2 = st.columns(2)
-        dn_stub = c1.selectbox("DN Stutzen", df['DN'], index=5, key="gs_dn1")
-        dn_main = c2.selectbox("DN Hauptrohr", df['DN'], index=8, key="gs_dn2")
-        
-        if c1.button("Kurve berechnen"):
-            try:
-                df_coords = calc.calculate_stutzen_coords(dn_main, dn_stub)
-                fig = Visualizer.plot_stutzen(dn_main, dn_stub, df)
-                c_res1, c_res2 = st.columns([1, 2])
-                with c_res1: st.table(df_coords)
-                with c_res2: st.pyplot(fig)
-            except ValueError as e:
-                st.error(str(e))
+    # Navigation
+    mode = st.radio(
+        "Modus wählen:", 
+        ["2D Etage (S-Schlag)", "3D Raum-Etage (Rolling)", "Bogen-Rechner", "Stutzen-Schablone"],
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+    st.divider()
 
-    with t_bogen:
+    # --- 1. 2D ETAGE ---
+    if "2D Etage" in mode:
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            st.markdown("#### Eingabe")
+            dn = st.selectbox("Nennweite", df['DN'], index=5)
+            offset = st.number_input("Versprung (H) [mm]", value=500.0, step=10.0, help="Mitte-Mitte Abstand")
+            angle = st.selectbox("Fittings (°)", [30, 45, 60], index=1)
+            
+            if st.button("Berechnen 🧮", type="primary"):
+                res = calc.calculate_2d_offset(dn, offset, angle)
+                st.session_state.calc_res_2d = res 
+        
+        with c2:
+            if 'calc_res_2d' in st.session_state:
+                res = st.session_state.calc_res_2d
+                if "error" in res:
+                    st.error(res["error"])
+                else:
+                    st.markdown("#### Ergebnis")
+                    m1, m2 = st.columns(2)
+                    m1.metric("Zuschnitt (Rohr)", f"{res['cut_length']:.1f} mm")
+                    m2.metric("Etagenlänge (Diag)", f"{res['hypotenuse']:.1f} mm")
+                    
+                    st.info(f"""
+                    * Baulänge (L): {res['run']:.1f} mm
+                    * Abzug pro Bogen (Z): {res['z_mass_single']:.1f} mm
+                    * Versprung (H): {res['offset']:.1f} mm
+                    """)
+                    
+                    # 2D Plot
+                    fig, ax = plt.subplots(figsize=(6, 2))
+                    ax.plot([0, 100], [0, 0], 'k-', lw=3) 
+                    x_end = 100 + res['run']
+                    y_end = res['offset']
+                    ax.plot([100, x_end], [0, y_end], 'r-', lw=3)
+                    ax.plot([x_end, x_end+100], [y_end, y_end], 'k-', lw=3)
+                    ax.set_aspect('equal')
+                    ax.grid(True, linestyle=':', alpha=0.6)
+                    st.pyplot(fig)
+
+    # --- 2. 3D RAUM ETAGE ---
+    elif "3D Raum" in mode:
+        st.info("💡 Berechnet die Hypotenuse (Travel) im Raum.")
+        c1, c2 = st.columns([1, 2])
+        
+        with c1:
+            roll = st.number_input("Roll (Seite) [mm]", value=400.0)
+            set_val = st.number_input("Set (Tiefe) [mm]", value=300.0)
+            height = st.number_input("Height (Höhe) [mm]", value=500.0)
+            
+        with c2:
+            res = calc.calculate_rolling_offset(100, roll, set_val, height)
+            
+            mc1, mc2 = st.columns(2)
+            mc1.metric("Travel (Raumdiagonale)", f"{res['travel']:.1f} mm")
+            mc2.metric("Winkel (Theoretisch)", f"{res['angle_calc']:.1f} °")
+            
+            with st.expander("3D Visualisierung", expanded=True):
+                fig = Visualizer.plot_rolling_offset_3d(roll, set_val, height, res['travel'])
+                st.pyplot(fig)
+
+    # --- 3. BOGEN RECHNER ---
+    elif "Bogen" in mode:
+        st.markdown("#### Bogen Zuschnitt")
         cb1, cb2 = st.columns(2)
         angle = cb1.slider("Winkel (°)", 0, 90, 45, key="gb_ang")
         dn_b = cb2.selectbox("DN Bogen", df['DN'], index=6, key="gb_dn")
@@ -404,17 +564,29 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
         
         st.divider()
         c_vorbau, c_laengen = st.columns([1, 2])
-        
         with c_vorbau:
-            st.markdown("**Einbaumaß**")
             st.metric("Vorbau (Z-Maß)", f"{details['vorbau']:.1f} mm")
-            
         with c_laengen:
-            st.markdown("**Bogenlängen (Material)**")
             cm1, cm2, cm3 = st.columns(3)
-            cm1.metric("Außen (Rücken)", f"{details['bogen_aussen']:.1f} mm")
-            cm2.metric("Mitte (Neutral)", f"{details['bogen_mitte']:.1f} mm") 
-            cm3.metric("Innen (Bauch)", f"{details['bogen_innen']:.1f} mm")
+            cm1.metric("Rücken", f"{details['bogen_aussen']:.1f} mm")
+            cm2.metric("Mitte", f"{details['bogen_mitte']:.1f} mm") 
+            cm3.metric("Bauch", f"{details['bogen_innen']:.1f} mm")
+
+    # --- 4. STUTZEN ---
+    elif "Stutzen" in mode:
+        c1, c2 = st.columns(2)
+        dn_stub = c1.selectbox("DN Stutzen", df['DN'], index=5, key="gs_dn1")
+        dn_main = c2.selectbox("DN Hauptrohr", df['DN'], index=8, key="gs_dn2")
+        
+        if c1.button("Schablone berechnen"):
+            try:
+                df_coords = calc.calculate_stutzen_coords(dn_main, dn_stub)
+                fig = Visualizer.plot_stutzen(dn_main, dn_stub, df)
+                c_res1, c_res2 = st.columns([1, 2])
+                with c_res1: st.table(df_coords)
+                with c_res2: st.pyplot(fig)
+            except ValueError as e:
+                st.error(str(e))
 
 def render_logbook(df_pipe: pd.DataFrame):
     st.subheader("📝 Digitales Rohrbuch")
@@ -459,9 +631,7 @@ def render_logbook(df_pipe: pd.DataFrame):
                 st.rerun()
 
 def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
-    """
-    DESIGN FIX V5.4: Konsequente Nutzung von st.metric statt HTML Boxen.
-    """
+    """Smart Data V5.4"""
     row = calc.get_row(dn)
     suffix = "_16" if pn == "PN 16" else "_10"
     st.subheader(f"📚 Smart Data: DN {dn} / {pn}")
@@ -491,7 +661,6 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
             st.markdown("##### 📐 Flansch")
             st.write(f"**Blatt:** {flange_b} mm | **Lochkreis:** {lk} mm")
             st.write(f"**Bohrung:** {n_holes} x {bolt}")
-            # BUGFIX V5.3 (bewahrt): Progress Bar Limit
             progress_val = min(lk / (od + 100), 1.0)
             st.progress(progress_val, text="Lochkreis Verhältnis")
 
@@ -503,33 +672,24 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
             st.info(f"ID: ~{d_innen:.0f} mm | AD: ~{d_aussen:.0f} mm | 2.0mm")
 
     st.divider()
-    
-    # DESIGN FIX: Native Metriken für Montage
     st.markdown("#### 🔧 Montage & Drehmomente (8.8)")
-    
     cb_col1, cb_col2 = st.columns([1, 2.5])
-    
     with cb_col1:
         st.caption("Konfiguration")
         conn_type = st.radio("Typ", ["Fest-Fest", "Fest-Los", "Fest-Blind"], index=0, label_visibility="collapsed")
         use_washers = st.checkbox("2x U-Scheibe", value=True)
         is_lubed = st.toggle("Geschmiert (MoS2)", value=True)
         gasket_thk = st.number_input("Dichtung", value=2.0, step=0.5)
-        
     with cb_col2:
         bolt_info = HandbookCalculator.BOLT_DATA.get(bolt, [0, 0, 0])
         sw, nm_dry, nm_lube = bolt_info
-        
         t1 = flange_b
         t2 = flange_b 
         if "Los" in conn_type: t2 = flange_b + 5 
         elif "Blind" in conn_type: t2 = flange_b + (dn * 0.02)
-            
         n_washers = 2 if use_washers else 0
         calc_len = HandbookCalculator.get_bolt_length(t1, t2, bolt, n_washers, gasket_thk)
         torque = nm_lube if is_lubed else nm_dry
-        
-        # Sauberer, nativer Look
         m1, m2, m3 = st.columns(3)
         m1.metric("Bolzen", f"{bolt} x {calc_len}", f"{n_holes} Stk.")
         m2.metric("Schlüsselweite", f"SW {sw} mm", "Nuss/Ring")
