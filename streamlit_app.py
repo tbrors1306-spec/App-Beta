@@ -21,10 +21,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V6_1")
+logger = logging.getLogger("PipeCraft_Pro_V6_2")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 6.1",
+    page_title="Rohrbau Profi 6.2",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -35,23 +35,13 @@ st.markdown("""
     .main { background-color: #f8f9fa; }
     h1, h2, h3 { color: #1e293b; font-family: 'Segoe UI', sans-serif; }
     
-    .success-box {
-        padding: 20px; background-color: #dcfce7; color: #166534;
-        border-radius: 8px; border-left: 5px solid #22c55e;
-        margin: 10px 0; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    .error-box {
-        padding: 20px; background-color: #fee2e2; color: #991b1b;
-        border-radius: 8px; border-left: 5px solid #ef4444;
-        margin: 10px 0; text-align: center;
-    }
-    .info-box {
-        padding: 15px; background-color: #eff6ff; color: #1e40af;
-        border-radius: 6px; border-left: 4px solid #3b82f6; margin-bottom: 10px;
-    }
+    /* Native Metriken Styling */
     div[data-testid="stMetric"] {
-        background-color: #ffffff; border: 1px solid #e2e8f0;
-        border-radius: 8px; padding: 10px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        background-color: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 10px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -62,6 +52,7 @@ st.markdown("""
 
 @st.cache_data
 def get_pipe_data() -> pd.DataFrame:
+    """Lädt die statischen Rohdaten."""
     raw_data = {
         'DN':            [25, 32, 40, 50, 65, 80, 100, 125, 150, 200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000, 1200, 1400, 1600],
         'D_Aussen':      [33.7, 42.4, 48.3, 60.3, 76.1, 88.9, 114.3, 139.7, 168.3, 219.1, 273.0, 323.9, 355.6, 406.4, 457.0, 508.0, 610.0, 711.0, 813.0, 914.0, 1016.0, 1219.0, 1422.0, 1626.0],
@@ -86,6 +77,8 @@ def get_pipe_data() -> pd.DataFrame:
 DB_NAME = "rohrbau_profi.db"
 
 class DatabaseRepository:
+    """Verwaltet Datenbankoperationen."""
+    
     @staticmethod
     def init_db():
         with sqlite3.connect(DB_NAME) as conn:
@@ -95,6 +88,7 @@ class DatabaseRepository:
                         iso TEXT, naht TEXT, datum TEXT, 
                         dimension TEXT, bauteil TEXT, laenge REAL, 
                         charge TEXT, charge_apz TEXT, schweisser TEXT)''')
+            
             c.execute("PRAGMA table_info(rohrbuch)")
             cols = [info[1] for info in c.fetchall()]
             if 'charge_apz' not in cols:
@@ -148,6 +142,7 @@ class FittingItem:
 @dataclass
 class SavedCut:
     id: int
+    name: str           # <--- NEU IN V6.2: Bezeichnung
     raw_length: float
     cut_length: float
     details: str
@@ -335,34 +330,45 @@ class Exporter:
 # -----------------------------------------------------------------------------
 
 def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn: str):
-    st.subheader("🪚 Smarte Säge 6.1")
+    st.subheader("🪚 Smarte Säge 6.2")
     
     # State Init
     if 'fitting_list' not in st.session_state: st.session_state.fitting_list = []
     if 'saved_cuts' not in st.session_state: st.session_state.saved_cuts = []
     if 'next_cut_id' not in st.session_state: st.session_state.next_cut_id = 1
 
-    # PHASE 1 FEATURE: Check ob Daten aus Geometrie kommen
+    # STATE HEALING V6.2: Falls alte SavedCut Objekte ohne 'name' existieren, Liste resetten
+    if st.session_state.saved_cuts:
+        try: _ = st.session_state.saved_cuts[0].name
+        except AttributeError: 
+            st.session_state.saved_cuts = []
+            st.toast("System: Schnittliste wurde wegen Versionsupdate zurückgesetzt.", icon="ℹ️")
+
+    # Transfer-Check
     default_raw = 0.0
     if 'transfer_cut_length' in st.session_state:
         default_raw = st.session_state.pop('transfer_cut_length')
-        st.toast("✅ Daten aus Geometrie übernommen!", icon="📏")
+        st.toast("✅ Maß aus Geometrie übernommen!", icon="📏")
 
-    c_calc, c_list = st.columns([1.5, 1.5])
+    c_calc, c_list = st.columns([1.4, 1.6])
 
+    # --- LINKE SPALTE ---
     with c_calc:
         with st.container(border=True):
-            st.markdown("#### 1. Zuschnitt")
-            # Hier nutzen wir den Default-Wert aus dem Transfer
-            raw_len = st.number_input("Schnittmaß aus Plan [mm]", value=default_raw, min_value=0.0, step=10.0, format="%.1f")
+            st.markdown("#### 1. Neuer Schnitt")
+            # NEU V6.2: Bezeichnung
+            cut_name = st.text_input("Bezeichnung / Spool", placeholder="z.B. Strang A - 01", help="Name für die Liste")
+            
+            raw_len = st.number_input("Schnittmaß (Roh) [mm]", value=default_raw, min_value=0.0, step=10.0, format="%.1f")
             
             cg1, cg2, cg3 = st.columns(3)
-            gap = cg1.number_input("Wurzelspalt (mm)", value=3.0, step=0.5)
-            dicht_anz = cg2.number_input("Anz. Dicht.", 0, 5, 0)
+            gap = cg1.number_input("Spalt (mm)", value=3.0, step=0.5)
+            dicht_anz = cg2.number_input("Dichtungen", 0, 5, 0)
             dicht_thk = cg3.number_input("Dicke (mm)", 0.0, 5.0, 2.0, disabled=(dicht_anz==0))
             
             st.divider()
-            st.caption("Bauteil abziehen:")
+            
+            st.caption("Bauteil-Abzüge:")
             ca1, ca2, ca3, ca4 = st.columns([2, 1.5, 1, 1])
             f_type = ca1.selectbox("Typ", ["Bogen 90° (BA3)", "Bogen (Zuschnitt)", "Flansch (Vorschweiß)", "T-Stück", "Reduzierung"], label_visibility="collapsed")
             f_dn = ca2.selectbox("DN", df['DN'], index=df['DN'].tolist().index(current_dn), label_visibility="collapsed")
@@ -379,7 +385,7 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                 st.rerun()
 
             if st.session_state.fitting_list:
-                st.markdown("###### Liste:")
+                st.markdown("###### Aktuelle Abzüge:")
                 for i, item in enumerate(st.session_state.fitting_list):
                     cr1, cr2, cr3 = st.columns([3, 1.5, 0.5])
                     cr1.text(f"{item.count}x {item.name}")
@@ -387,7 +393,7 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                     if cr3.button("x", key=f"d_{item.id}"):
                         st.session_state.fitting_list.pop(i)
                         st.rerun()
-                if st.button("Alles löschen", type="secondary"):
+                if st.button("Reset Abzüge", type="secondary"):
                     st.session_state.fitting_list = []
                     st.rerun()
 
@@ -399,27 +405,72 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
 
             st.divider()
             if final < 0:
-                st.error(f"ACHTUNG: Negativmaß! Abzüge ({total:.1f}) > Rohr ({raw_len:.1f})")
+                st.error(f"Negativmaß! ({final:.1f} mm)")
             else:
                 st.success(f"Sägelänge: {final:.1f} mm")
-                st.caption(f"Details: Teile -{sum_fit:.1f} | Spalte -{sum_gap:.1f} | Dicht. -{sum_gskt:.1f}")
+                st.caption(f"Abzüge: Teile -{sum_fit:.1f} | Spalte -{sum_gap:.1f} | Dicht. -{sum_gskt:.1f}")
                 
-                if st.button("💾 Speichern", type="primary", use_container_width=True):
+                # SPEICHERN LOGIK (V6.2 mit Name)
+                if st.button("💾 In Schnittliste speichern", type="primary", use_container_width=True):
                     if raw_len > 0:
-                        st.session_state.saved_cuts.append(SavedCut(st.session_state.next_cut_id, raw_len, final, f"{len(st.session_state.fitting_list)} Teile", datetime.now().strftime("%H:%M")))
+                        final_name = cut_name if cut_name.strip() else f"Schnitt #{st.session_state.next_cut_id}"
+                        st.session_state.saved_cuts.append(SavedCut(
+                            id=st.session_state.next_cut_id,
+                            name=final_name, 
+                            raw_length=raw_len, 
+                            cut_length=final, 
+                            details=f"{len(st.session_state.fitting_list)} Teile", 
+                            timestamp=datetime.now().strftime("%H:%M")
+                        ))
                         st.session_state.next_cut_id += 1
-                        st.session_state.fitting_list = []
+                        st.session_state.fitting_list = [] 
+                        st.success("Gespeichert!")
                         st.rerun()
 
+    # --- RECHTE SPALTE: LISTE V6.2 ---
     with c_list:
-        st.markdown("#### 📋 Gespeichert")
-        if st.session_state.saved_cuts:
+        st.markdown("#### 📋 Schnittliste")
+        
+        if not st.session_state.saved_cuts:
+            st.info("Noch keine Schnitte vorhanden.")
+        else:
             data = [asdict(c) for c in st.session_state.saved_cuts]
-            df_s = pd.DataFrame(data).drop(columns=['id']).rename(columns={'raw_length': 'Rohr', 'cut_length': 'Schnitt'})
-            st.dataframe(df_s, use_container_width=True, hide_index=True)
-            if st.button("Liste leeren"):
+            df_s = pd.DataFrame(data)
+            df_s['Löschen'] = False
+            
+            df_display = df_s[['Löschen', 'name', 'raw_length', 'cut_length', 'details', 'id']]
+
+            # DATA EDITOR MIT CHECKBOXEN
+            edited_df = st.data_editor(
+                df_display,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Löschen": st.column_config.CheckboxColumn("🗑️", width="small"),
+                    "name": st.column_config.TextColumn("Bezeichnung", width="medium"),
+                    "raw_length": st.column_config.NumberColumn("Roh", format="%.0f"),
+                    "cut_length": st.column_config.NumberColumn("Säge", format="%.1f", width="medium"),
+                    "details": st.column_config.TextColumn("Info", width="small"),
+                    "id": None 
+                },
+                disabled=["name", "raw_length", "cut_length", "details", "id"], 
+                key="saw_editor"
+            )
+
+            to_delete_ids = edited_df[edited_df['Löschen'] == True]['id'].tolist()
+            
+            if to_delete_ids:
+                if st.button(f"🗑️ {len(to_delete_ids)} Schnitte löschen", type="primary"):
+                    st.session_state.saved_cuts = [c for c in st.session_state.saved_cuts if c.id not in to_delete_ids]
+                    st.rerun()
+
+            st.divider()
+            if st.button("Alles löschen (Reset)"):
                 st.session_state.saved_cuts = []
                 st.rerun()
+                
+            csv = df_s.drop(columns=['Löschen']).to_csv(sep=";", decimal=",", index=False).encode('utf-8')
+            st.download_button("📥 Liste als CSV", csv, "saegeliste.csv", "text/csv", use_container_width=True)
 
 def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
     st.subheader("📐 Geometrie V6.1")
@@ -448,10 +499,8 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                     m2.metric("Etagenlänge", f"{res['hypotenuse']:.1f} mm")
                     st.info(f"* Abzug pro Bogen (Z): {res['z_mass_single']:.1f} mm\n* Versprung (H): {res['offset']:.1f} mm")
                     
-                    # PHASE 1 FEATURE: Transfer Button
                     if st.button("➡️ Maß an Säge senden", help="Überträgt den Zuschnitt in die Smarte Säge"):
                         st.session_state.transfer_cut_length = res['cut_length']
-                        # Wir können den Tab nicht per Code wechseln, daher Info
                         st.info("Wert kopiert! Wechsel zum Tab 'Smarte Säge'.")
 
                     fig, ax = plt.subplots(figsize=(6, 2))
@@ -545,6 +594,7 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
     row = calc.get_row(dn)
     suffix = "_16" if pn == "PN 16" else "_10"
     st.subheader(f"📚 Smart Data: DN {dn} / {pn}")
+
     od = float(row['D_Aussen'])
     flange_b = float(row[f'Flansch_b{suffix}'])
     lk = float(row[f'LK_k{suffix}'])
@@ -560,47 +610,56 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
         with c_in2:
             w_data = HandbookCalculator.calculate_weight(od, wt_input, len_input * 1000)
             mc1, mc2, mc3 = st.columns(3)
-            mc1.metric("Leergewicht", f"{w_data['total_steel']:.1f} kg", f"{w_data['kg_per_m_steel']:.1f} kg/m")
-            mc2.metric("Gefüllt", f"{w_data['total_filled']:.1f} kg", "Hydrotest")
-            mc3.metric("Volumen", f"{w_data['volume_l']:.0f} L")
+            mc1.metric("Leergewicht (Stahl)", f"{w_data['total_steel']:.1f} kg", f"{w_data['kg_per_m_steel']:.1f} kg/m")
+            mc2.metric("Gewicht Gefüllt", f"{w_data['total_filled']:.1f} kg", "für Hydrotest")
+            mc3.metric("Füllvolumen", f"{w_data['volume_l']:.0f} Liter", "Wasserbedarf")
 
     c_geo1, c_geo2 = st.columns(2)
     with c_geo1:
         with st.container(border=True):
             st.markdown("##### 📐 Flansch")
-            st.write(f"Blatt: {flange_b} mm | Lochkreis: {lk} mm")
-            st.write(f"Bohrung: {n_holes} x {bolt}")
+            st.write(f"**Blatt:** {flange_b} mm | **Lochkreis:** {lk} mm")
+            st.write(f"**Bohrung:** {n_holes} x {bolt}")
             progress_val = min(lk / (od + 100), 1.0)
-            st.progress(progress_val, text="LK Verhältnis")
+            st.progress(progress_val, text="Lochkreis Verhältnis")
+
     with c_geo2:
         with st.container(border=True):
-            st.markdown("##### 🔘 Dichtung")
+            st.markdown("##### 🔘 Dichtung (Check)")
             d_innen = od - (2*wt_input) 
             d_aussen = lk - (int(bolt.replace("M","")) * 1.5)
-            st.info(f"ID: ~{d_innen:.0f} mm | AD: ~{d_aussen:.0f} mm")
+            st.info(f"ID: ~{d_innen:.0f} mm | AD: ~{d_aussen:.0f} mm | 2.0mm")
 
     st.divider()
-    st.markdown("#### 🔧 Montage (8.8)")
+    
+    st.markdown("#### 🔧 Montage & Drehmomente (8.8)")
+    
     cb_col1, cb_col2 = st.columns([1, 2.5])
+    
     with cb_col1:
-        conn_type = st.radio("Typ", ["Fest-Fest", "Fest-Los", "Fest-Blind"], index=0)
+        st.caption("Konfiguration")
+        conn_type = st.radio("Typ", ["Fest-Fest", "Fest-Los", "Fest-Blind"], index=0, label_visibility="collapsed")
         use_washers = st.checkbox("2x U-Scheibe", value=True)
-        is_lubed = st.toggle("Geschmiert", value=True)
+        is_lubed = st.toggle("Geschmiert (MoS2)", value=True)
         gasket_thk = st.number_input("Dichtung", value=2.0, step=0.5)
+        
     with cb_col2:
         bolt_info = HandbookCalculator.BOLT_DATA.get(bolt, [0, 0, 0])
         sw, nm_dry, nm_lube = bolt_info
+        
         t1 = flange_b
         t2 = flange_b 
         if "Los" in conn_type: t2 = flange_b + 5 
         elif "Blind" in conn_type: t2 = flange_b + (dn * 0.02)
+            
         n_washers = 2 if use_washers else 0
         calc_len = HandbookCalculator.get_bolt_length(t1, t2, bolt, n_washers, gasket_thk)
         torque = nm_lube if is_lubed else nm_dry
+        
         m1, m2, m3 = st.columns(3)
         m1.metric("Bolzen", f"{bolt} x {calc_len}", f"{n_holes} Stk.")
-        m2.metric("SW", f"{sw} mm")
-        m3.metric("Moment", f"{torque} Nm", "Geschmiert" if is_lubed else "Trocken")
+        m2.metric("Schlüsselweite", f"SW {sw} mm", "Nuss/Ring")
+        m3.metric("Drehmoment", f"{torque} Nm", "Geschmiert" if is_lubed else "Trocken")
 
 # -----------------------------------------------------------------------------
 # 5. MAIN
