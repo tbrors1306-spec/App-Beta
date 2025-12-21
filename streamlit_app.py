@@ -9,7 +9,8 @@ from io import BytesIO
 from typing import List, Tuple, Optional, Dict
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D # Wichtig für 3D
+from mpl_toolkits.mplot3d import Axes3D
+import numpy as np # Wird für die Flächen benötigt
 
 # FPDF optional laden
 try:
@@ -23,10 +24,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V7_6")
+logger = logging.getLogger("PipeCraft_Pro_V7_7")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 7.6",
+    page_title="Rohrbau Profi 7.7",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -36,7 +37,6 @@ st.markdown("""
 <style>
     .main { background-color: #f8f9fa; }
     h1, h2, h3 { color: #1e293b; font-family: 'Segoe UI', sans-serif; }
-    
     .project-tag {
         background-color: #0ea5e9; color: white;
         padding: 6px 12px; border-radius: 20px;
@@ -44,7 +44,6 @@ st.markdown("""
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         margin-bottom: 15px; display: inline-block;
     }
-
     div[data-testid="stMetric"] {
         background-color: #ffffff;
         border: 1px solid #e2e8f0; border-radius: 8px;
@@ -97,6 +96,7 @@ class DatabaseRepository:
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         name TEXT NOT NULL UNIQUE,
                         created_at TEXT)''')
+            
             c.execute("PRAGMA table_info(rohrbuch)")
             cols = [info[1] for info in c.fetchall()]
             if 'charge_apz' not in cols:
@@ -273,84 +273,95 @@ class Visualizer:
         ax.set_xlim(0, 360); ax.set_ylabel("Tiefe (mm)"); ax.grid(True, linestyle='--', alpha=0.5)
         plt.tight_layout(); return fig
 
-    # --- NEU V7.6: ECHTE VISUALISIERUNG ---
-    
     @staticmethod
     def plot_2d_offset(run: float, offset: float):
-        """Zeichnet eine klassische 2D Etage mit Bemaßung."""
         fig, ax = plt.subplots(figsize=(6, 2.5))
-        
-        # Punkte
-        x = [0, run, run*1.5] # Start, Ende Schräge, Ende Rohr
+        x = [0, run, run*1.5] 
         y = [0, offset, offset]
-        
-        # Hauptlinie (Rohr)
-        ax.plot([0, run], [0, offset], color='#dc2626', linewidth=3, label='Rohrachse') # Schräge
-        ax.plot([run, run*1.5], [offset, offset], color='black', linewidth=3) # Weiterführung
-        ax.plot([-50, 0], [0, 0], color='black', linewidth=3) # Ankunft
-        
-        # Hilfslinien (Dreieck)
-        ax.plot([0, run], [0, 0], linestyle='--', color='gray', alpha=0.7) # Länge (Run)
-        ax.plot([run, run], [0, offset], linestyle='--', color='gray', alpha=0.7) # Höhe (Offset)
-        
-        # Beschriftung
+        ax.plot([0, run], [0, offset], color='#dc2626', linewidth=3, label='Rohrachse') 
+        ax.plot([run, run*1.5], [offset, offset], color='black', linewidth=3) 
+        ax.plot([-50, 0], [0, 0], color='black', linewidth=3) 
+        ax.plot([0, run], [0, 0], linestyle='--', color='gray', alpha=0.7) 
+        ax.plot([run, run], [0, offset], linestyle='--', color='gray', alpha=0.7) 
         ax.text(run/2, -offset*0.1 if offset!=0 else -10, f"Länge: {run:.0f}", ha='center', color='blue')
         ax.text(run + (run*0.05), offset/2, f"H: {offset:.0f}", va='center', color='blue')
-        
-        # Style
         ax.set_aspect('equal')
         ax.axis('off')
         plt.tight_layout()
         return fig
 
     @staticmethod
-    def plot_rolling_offset_3d_box(roll: float, set_val: float, travel: float):
+    def plot_rolling_offset_3d_room(roll: float, run: float, set_val: float):
         """
-        Zeichnet eine 3D-Wireframe Box für die Raum-Etage.
-        X = Roll, Y = Set, Z = Travel-Direction
+        True 3D Representation of the Rolling Offset in a 'Room' context.
         """
-        fig = plt.figure(figsize=(6, 5))
+        fig = plt.figure(figsize=(7, 6))
         ax = fig.add_subplot(111, projection='3d')
         
-        # Wir simulieren den "Kasten". Start bei 0,0,0
-        # Zielpunkt ist bei (Roll, 0, Set) wenn wir Run ignorieren und nur den Versprung zeigen
-        # Oder besser: (Roll, Run, Set). Da wir Run oft nicht fix haben, nehmen wir eine schematische Tiefe.
+        # 1. Coordinate Definition
+        # Start Point (Incoming pipe end)
+        P0 = np.array([0, 0, 0])
+        # End Point (Outgoing pipe start)
+        P1 = np.array([roll, run, set_val])
         
-        # Kasten Eckpunkte für Wireframe (Roll x Set)
-        # Wir zeichnen den Weg des Rohres im Raum
+        # 2. Draw Floor & Walls (Reference Planes)
+        # Max dimension to scale the room
+        max_dim = max(abs(roll), abs(run), abs(set_val), 100)
         
-        # Start (0,0,0) -> Ende (Roll, "Tiefe", Set)
-        # Da Travel die Hypotenuse im Raum ist, ist die Tiefe (Run) = sqrt(Travel^2 - Roll^2 - Set^2)
-        # Wir nehmen hier an, Travel ist die Diagonale des Versprungs selbst (ohne Run), 
-        # oder wir visualisieren einfach den Versprung-Kasten.
+        # Floor (z=0)
+        xx, yy = np.meshgrid(np.linspace(-max_dim*0.2, roll*1.2, 2), np.linspace(-max_dim*0.2, run*1.2, 2))
+        zz = np.zeros_like(xx)
+        ax.plot_surface(xx, yy, zz, color='gray', alpha=0.1)
         
-        # Schema: Kasten zeichnen
-        x = [0, roll, roll, 0, 0] # Boden
-        z = [0, 0, set_val, set_val, 0] # Frontseite
+        # 3. Draw The Pipe System
+        # Incoming Pipe (Grey stub from negative Y)
+        ax.plot([0, 0], [-run*0.3, 0], [0, 0], color='gray', linewidth=4, alpha=0.6)
         
-        # Rohrleitung (Diagonale im Kasten)
-        ax.plot([0, roll], [0, 0], [0, set_val], color='#dc2626', linewidth=4, label='Rohrleitung')
+        # The TRAVEL Pipe (Red, P0 to P1)
+        ax.plot([P0[0], P1[0]], [P0[1], P1[1]], [P0[2], P1[2]], color='#dc2626', linewidth=5, label='Passstück')
         
-        # Hilfslinien Kasten (Gestrichelt)
-        # Unten (Roll)
-        ax.plot([0, roll], [0, 0], [0, 0], 'k--', alpha=0.3)
-        # Seite (Set)
-        ax.plot([roll, roll], [0, 0], [0, set_val], 'k--', alpha=0.3)
-        # Diagonale 2D (True Offset)
-        ax.plot([0, roll], [0, 0], [0, set_val], 'b:', alpha=0.2) 
-
-        # Labels
+        # Outgoing Pipe (Grey stub to positive Y)
+        ax.plot([P1[0], P1[0]], [P1[1], P1[1]+run*0.3], [P1[2], P1[2]], color='gray', linewidth=4, alpha=0.6)
+        
+        # 4. Fittings (Nodes) as Dots
+        ax.scatter([P0[0], P1[0]], [P0[1], P1[1]], [P0[2], P1[2]], color='#1e3a8a', s=100, label='Naht/Flansch')
+        
+        # 5. Dimension Lines (Projections)
+        # Drop line to floor (Height/Set)
+        ax.plot([P1[0], P1[0]], [P1[1], P1[1]], [0, P1[2]], 'b--', linewidth=1, label='Höhe (Set)')
+        # Line on floor (Roll) - from Y-axis projection to Point projection
+        # Projection of P1 on floor is (roll, run, 0)
+        # Projection on "straight" line would be (0, run, 0)
+        ax.plot([0, P1[0]], [P1[1], P1[1]], [0, 0], 'g--', linewidth=1, label='Seite (Roll)')
+        
+        # 6. Labels & View
         ax.set_xlabel('Seite (Roll)')
+        ax.set_ylabel('Länge (Run)')
         ax.set_zlabel('Höhe (Set)')
-        ax.set_yticks([]) # Y-Achse (Tiefe) ausblenden, da reine Front-Versprung-Ansicht oft klarer ist
         
-        # Titel mit Werten
-        ax.set_title(f"Raum-Versprung\nRoll: {roll} | Set: {set_val}", fontsize=10)
-        
-        # Aspect Ratio Hack für Matplotlib
-        try: ax.set_box_aspect([roll if roll>0 else 1, 1, set_val if set_val>0 else 1])
-        except: pass
-        
+        # Force aspect ratio to be cubic/equal
+        # Matplotlib 3.3+ supports this
+        try:
+            ax.set_box_aspect([roll if roll>10 else 100, run if run>10 else 100, set_val if set_val>10 else 100])
+        except:
+            pass # Fallback for older versions
+            
+        ax.legend(loc='upper left', fontsize='small')
+        return fig
+
+    @staticmethod
+    def plot_rotation_gauge(roll: float, set_val: float, rotation_angle: float):
+        fig, ax = plt.subplots(figsize=(3, 3), subplot_kw={'projection': 'polar'})
+        theta = math.radians(rotation_angle)
+        ax.arrow(0, 0, theta, 0.9, head_width=0.1, head_length=0.1, fc='#ef4444', ec='#ef4444', length_includes_head=True)
+        ax.set_theta_zero_location("N") 
+        ax.set_theta_direction(-1)      
+        ax.set_rticks([])               
+        ax.set_rlim(0, 1)
+        ax.grid(True, alpha=0.3)
+        ax.set_title(f"Verdrehung: {rotation_angle:.1f}°", va='bottom', fontsize=10, fontweight='bold')
+        ax.text(math.radians(90), 1.2, "R", ha='center', fontweight='bold')
+        ax.text(math.radians(270), 1.2, "L", ha='center', fontweight='bold')
         return fig
 
 class Exporter:
@@ -588,7 +599,7 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                 st.rerun()
 
 def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
-    st.subheader("📐 Geometrie V7.6 (Visuals)")
+    st.subheader("📐 Geometrie V7.7 (True 3D)")
     
     geo_tabs = st.tabs(["2D Etage (S-Schlag)", "3D Raum-Etage (Rolling)", "Bogen", "Stutzen"])
     
@@ -626,7 +637,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
     with geo_tabs[1]:
         st.info("💡 Berechnet eine Raum-Etage mit **Standard-Fittings**.")
         
-        col_in, col_out, col_vis = st.columns([1, 1, 1])
+        col_in, col_out, col_vis = st.columns([1, 1, 1.5]) # Mehr Platz für Visualisierung
         
         with col_in:
             st.markdown("**Eingabe**")
@@ -656,6 +667,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
             st.metric("Zuschnitt (Rohr)", f"{cut_len:.1f} mm")
             st.caption(f"Einbaumaß (Mitte-Mitte): {travel_center:.1f} mm")
             st.metric("Baulänge (Run)", f"{run_length:.1f} mm", help="Platzbedarf in Längsrichtung")
+            st.metric("Verdrehung", f"{rot_angle:.1f} °", "aus der Senkrechten")
             
             if cut_len < 0:
                 st.error("Nicht baubar! Fittings stoßen zusammen.")
@@ -665,12 +677,14 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                     st.toast("Maß übertragen!", icon="📏")
 
         with col_vis:
-            st.markdown("**Montage & Visualisierung**")
-            st.metric("Verdrehung", f"{rot_angle:.1f} °", "aus der Senkrechten")
-            
-            # VISUAL 3D BOX (NEW)
-            fig_3d = Visualizer.plot_rolling_offset_3d_box(roll_val, set_val, travel_center)
+            st.markdown("**3D Simulation**")
+            # VISUAL 3D ROOM (NEW V7.7)
+            fig_3d = Visualizer.plot_rolling_offset_3d_room(roll_val, run_length, set_val)
             st.pyplot(fig_3d, use_container_width=False)
+            
+            with st.expander("Verdrehung (Wasserwaage)"):
+                fig_gauge = Visualizer.plot_rotation_gauge(roll_val, set_val, rot_angle)
+                st.pyplot(fig_gauge, use_container_width=False)
 
     # --- 3. BOGEN RECHNER ---
     with geo_tabs[2]:
