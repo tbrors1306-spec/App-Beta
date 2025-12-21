@@ -1,5 +1,5 @@
 """
-PipeCraft V46.1 (Clean Code Master Edition - Hotfix)
+PipeCraft (Clean Code Master Edition - Hotfix)
 ----------------------------------------------------
 Fix: Missing 'datetime' import added.
 
@@ -50,7 +50,7 @@ except ImportError:
 
 # Streamlit Seiten-Konfiguration (Muss der erste Streamlit-Befehl sein)
 st.set_page_config(
-    page_title="PipeCraft V46.1",
+    page_title="PipeCraft",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -436,7 +436,7 @@ standard_radius_global = float(row_data_global['Radius_BA3'])
 suffix = "_16" if selected_pn == "PN 16" else "_10"
 
 # --- HAUPTBEREICH ---
-st.title("PipeCraft V46.1")
+st.title("PipeCraft")
 st.caption(f"🔧 Aktive Konfiguration: DN {selected_dn_global} | {selected_pn} | Standard-Radius: {standard_radius_global} mm")
 
 # Tabs definieren
