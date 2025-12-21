@@ -1,16 +1,14 @@
 """
-PipeCraft V33.0 (Stable Enterprise Edition)
+PipeCraft V33.1 (Stable Enterprise Edition)
 -------------------------------------------
-Version: 33.0.0
+Version: 33.1.0 (Hotfix)
 Date: 2023-12-21
 Author: Senior Lead Software Engineer (AI)
 
 Changelog:
-- FIX: Removed all condensed code lines to prevent NameErrors.
-- FIX: Restored V23.3 Calculation Logic (Granular Physics).
-- FEAT: Added Multi-DN Selection in Smart Cut (Reducers).
-- FEAT: Integrated Inventory Management.
-- CORE: Robust Error Handling and Initialization.
+- HOTFIX: Fixed TypeError in 'number_input' by enforcing explicit keyword arguments (value=...).
+- REFAC: Applied strict parameter naming across all UI widgets for stability.
+- FEAT: All previous features (3D, Inventory, Smart Cut) are preserved.
 """
 
 import streamlit as st
@@ -22,7 +20,7 @@ from mpl_toolkits.mplot3d import Axes3D
 import sqlite3
 import json
 import logging
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime
 from io import BytesIO
 from typing import List, Tuple, Any, Optional, Union, Dict
@@ -31,14 +29,12 @@ from typing import List, Tuple, Any, Optional, Union, Dict
 # 0. SYSTEM CONFIGURATION & LOGGING
 # -----------------------------------------------------------------------------
 
-# Logging Setup
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("PipeCraft")
 
-# Optional PDF Support
 try:
     from fpdf import FPDF
     PDF_AVAILABLE = True
@@ -46,105 +42,60 @@ except ImportError:
     PDF_AVAILABLE = False
     logger.warning("FPDF Library not found. PDF export disabled.")
 
-# Streamlit Page Configuration (Muss der erste Streamlit-Befehl sein!)
 st.set_page_config(
-    page_title="PipeCraft V33.0 Enterprise",
+    page_title="PipeCraft V33.1 Enterprise",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS Styles
 st.markdown("""
 <style>
-    /* Global Settings */
-    .stApp { 
-        background-color: #f8f9fa; 
-        color: #0f172a; 
-    }
-    h1, h2, h3 { 
-        font-family: 'Helvetica Neue', sans-serif; 
-        color: #1e293b !important; 
-        font-weight: 800; 
-        letter-spacing: -0.5px;
-    }
+    .stApp { background-color: #f8f9fa; color: #0f172a; }
+    h1, h2, h3 { font-family: 'Helvetica Neue', sans-serif; color: #1e293b !important; font-weight: 800; letter-spacing: -0.5px; }
     
-    /* Result Cards */
     .result-card-blue { 
-        background-color: #eff6ff; 
-        padding: 20px; 
-        border-radius: 10px; 
-        border-left: 6px solid #3b82f6; 
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05); 
-        margin-bottom: 15px; 
-        color: #1e3a8a; 
-        font-size: 1rem; 
+        background-color: #eff6ff; padding: 20px; border-radius: 10px; 
+        border-left: 6px solid #3b82f6; box-shadow: 0 2px 4px rgba(0,0,0,0.05); 
+        margin-bottom: 15px; color: #1e3a8a; font-size: 1rem; 
     }
     
     .result-card-green { 
-        background: linear-gradient(to right, #f0fdf4, #ffffff); 
-        padding: 25px; 
-        border-radius: 12px; 
-        border-left: 8px solid #22c55e; 
-        box-shadow: 0 4px 10px rgba(0,0,0,0.08); 
-        margin-bottom: 15px; 
-        text-align: center; 
-        font-size: 1.6rem; 
-        font-weight: 800; 
-        color: #14532d; 
+        background: linear-gradient(to right, #f0fdf4, #ffffff); padding: 25px; 
+        border-radius: 12px; border-left: 8px solid #22c55e; 
+        box-shadow: 0 4px 10px rgba(0,0,0,0.08); margin-bottom: 15px; 
+        text-align: center; font-size: 1.6rem; font-weight: 800; color: #14532d; 
     }
     
-    /* Info Boxes */
     .detail-box { 
-        background-color: #f1f5f9; 
-        border: 1px solid #cbd5e1; 
-        padding: 15px; 
-        border-radius: 8px; 
-        text-align: center; 
-        font-size: 0.9rem; 
-        color: #334155; 
-        height: 100%; 
-        display: flex; 
-        flex-direction: column; 
+        background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 15px; 
+        border-radius: 8px; text-align: center; font-size: 0.9rem; 
+        color: #334155; height: 100%; display: flex; flex-direction: column; 
         justify-content: center;
     }
     
     .weight-box { 
-        background-color: #fff1f2; 
-        border: 1px solid #fecdd3; 
-        color: #be123c; 
-        padding: 15px; 
-        border-radius: 8px; 
-        text-align: center; 
-        font-weight: bold; 
-        font-size: 1.1rem; 
-        margin-top: 10px; 
+        background-color: #fff1f2; border: 1px solid #fecdd3; color: #be123c; 
+        padding: 15px; border-radius: 8px; text-align: center; 
+        font-weight: bold; font-size: 1.1rem; margin-top: 10px; 
     }
     
-    /* Input Styling */
     .stNumberInput input, .stSelectbox div[data-baseweb="select"], .stTextInput input { 
-        border-radius: 8px; 
-        border: 1px solid #cbd5e1; 
+        border-radius: 8px; border: 1px solid #cbd5e1; 
     }
     
-    /* Buttons */
     div.stButton > button { 
-        width: 100%; 
-        border-radius: 8px; 
-        font-weight: 600; 
-        border: 1px solid #cbd5e1; 
-        transition: all 0.2s; 
+        width: 100%; border-radius: 8px; font-weight: 600; 
+        border: 1px solid #cbd5e1; transition: all 0.2s; 
     }
     div.stButton > button:hover { 
-        border-color: #3b82f6; 
-        color: #3b82f6; 
-        background-color: #eff6ff; 
+        border-color: #3b82f6; color: #3b82f6; background-color: #eff6ff; 
     }
 </style>
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 1. DATA LAYER (STATIC REPOSITORY)
+# 1. DATA LAYER
 # -----------------------------------------------------------------------------
 
 RAW_DATA = {
@@ -167,14 +118,12 @@ RAW_DATA = {
     'Lochzahl_10':  [4, 4, 4, 4, 4, 8, 8, 8, 8, 8, 12, 12, 16, 16, 20, 20, 20, 20, 24, 28, 28, 32, 36, 40]
 }
 
-# DataFrame Initialization with Safety Check
 try:
     df_pipe = pd.DataFrame(RAW_DATA)
 except ValueError as e:
-    st.error(f"Datenbankfehler: Inkonsistente Spaltenlängen. {e}")
+    st.error(f"FATAL ERROR: Inconsistent Data Arrays. {e}")
     st.stop()
 
-# Constants
 SCHRAUBEN_DB = { 
     "M12": [18, 60], "M16": [24, 130], "M20": [30, 250], "M24": [36, 420], 
     "M27": [41, 600], "M30": [46, 830], "M33": [50, 1100], "M36": [55, 1400], 
@@ -196,30 +145,26 @@ DB_NAME = "pipecraft.db"
 # -----------------------------------------------------------------------------
 
 def get_row_by_dn(dn: int) -> pd.Series:
-    """Holt die Datenbankzeile für eine spezifische Nennweite."""
     try:
         return df_pipe[df_pipe['DN'] == dn].iloc[0]
     except IndexError:
         return df_pipe.iloc[0]
 
 def get_schrauben_info(gewinde: str) -> List[Union[int, str]]:
-    """Gibt [Schlüsselweite, Drehmoment] zurück."""
     return SCHRAUBEN_DB.get(gewinde, ["?", "?"])
 
 def parse_abzuege(text: str) -> float:
-    """Berechnet Strings wie '50+30' sicher."""
     try:
         if not text:
             return 0.0
         clean_text = text.replace(",", ".").replace(" ", "")
-        allowed = set("0123456789.+-*/()")
-        if not set(clean_text).issubset(allowed):
+        if not all(c in "0123456789.+-*/()" for c in clean_text):
             return 0.0
         return float(pd.eval(clean_text))
     except Exception:
         return 0.0
 
-# UI Helper zur Vermeidung von IndexErrors
+# UI Helpers
 def get_ws_index(val: float) -> int:
     try: 
         return WS_LISTE.index(val)
@@ -248,20 +193,14 @@ def get_sys_idx(val: str) -> int:
 
 @dataclass
 class SelectedFitting:
-    """Repräsentiert ein ausgewähltes Formteil im Warenkorb."""
     type_name: str
     count: int
     deduction_single: float
     dn_spec: int
 
 class FittingManager:
-    """Berechnet Abzüge basierend auf Typ und DN."""
-    
     @staticmethod
     def get_deduction(type_name: str, dn_target: int, pn_suffix: str = "_16", custom_angle: float = 45.0) -> float:
-        """
-        Holt das Z-Maß. Wichtig: dn_target kann vom Hauptrohr abweichen (Reduzierung).
-        """
         row_data = get_row_by_dn(dn_target)
         
         if type_name == "Bogen 90° (BA3)":
@@ -269,7 +208,8 @@ class FittingManager:
         
         elif type_name == "Bogen (Zuschnitt)":
             radius = float(row_data['Radius_BA3'])
-            return radius * math.tan(math.radians(custom_angle / 2))
+            angle_rad = math.radians(custom_angle / 2)
+            return radius * math.tan(angle_rad)
             
         elif type_name == "Flansch (Vorschweiß)":
             return float(row_data[f'Flansch_b{pn_suffix}'])
@@ -290,23 +230,24 @@ class PhysicsEngine:
     
     @staticmethod
     def calculate_pipe_weight(dn_idx: int, ws: float, length_mm: float, is_zme: bool = False) -> float:
-        """Berechnet Gewicht (Stahl + ZME)."""
         try:
             da_mm = df_pipe.iloc[dn_idx]['D_Aussen']
-            
-            # Umrechnung: Längen in dm für Dichte in kg/dm³
             length_dm = length_mm / 100.0
             ra_dm = (da_mm / 2) / 100.0
             ri_stahl_dm = ra_dm - (ws / 100.0)
             
-            # Volumen Stahl
             vol_stahl = math.pi * (ra_dm**2 - ri_stahl_dm**2) * length_dm
             weight = vol_stahl * PhysicsEngine.DENSITY_STEEL
             
-            # Volumen ZME
             if is_zme:
                 dn_val = df_pipe.iloc[dn_idx]['DN']
-                cem_th_mm = 6.0 if dn_val < 300 else (9.0 if dn_val < 600 else 12.0)
+                if dn_val < 300:
+                    cem_th_mm = 6.0
+                elif dn_val < 600:
+                    cem_th_mm = 9.0
+                else:
+                    cem_th_mm = 12.0
+                    
                 ri_cem_dm = ri_stahl_dm - (cem_th_mm / 100.0)
                 
                 if ri_cem_dm > 0:
@@ -320,11 +261,6 @@ class PhysicsEngine:
 # --- COST ENGINE (V23.3 RESTORED) ---
 
 class CostEngine:
-    """
-    Berechnung von Zeit und Kosten mit physikalischer Genauigkeit.
-    (Stellt die Logik aus V23.3 wieder her).
-    """
-    
     @staticmethod
     def calculate_welding_detailed(
         dn: int, 
@@ -339,11 +275,7 @@ class CostEngine:
         p_cel: float,
         p_gas: float
     ) -> Tuple[float, float, str]:
-        """
-        Detaillierte Schweißkalkulation.
-        Returns: (Zeit pro Naht, Gesamtkosten, Materialtext)
-        """
-        # 1. Zeitberechnung (Inch-Diameter Rule)
+        
         zoll = dn / 25.0
         
         if process == "WIG":
@@ -354,36 +286,28 @@ class CostEngine:
             min_per_inch = 5.0 # MAG / E-Hand
             
         t_weld = zoll * min_per_inch
-        t_fit = zoll * 2.5 # Fittingzeit
+        t_fit = zoll * 2.5
         
-        # Dauer
         duration_per_seam = ((t_weld + t_fit) / pers_count) * factor
         total_hours = (duration_per_seam * anz) / 60
         labor_cost = total_hours * (pers_count * (p_lohn + p_mach))
         
-        # 2. Materialberechnung (Physikalisch)
         da = df_pipe[df_pipe['DN'] == dn].iloc[0]['D_Aussen']
-        
-        # Nahtvolumen-Schätzung
         weld_cross_section_mm2 = ws**2 * 0.8
         weld_circumference_mm = da * math.pi
         weld_volume_mm3 = weld_circumference_mm * weld_cross_section_mm2
         
-        # Gewicht Zusatzwerkstoff (inkl. 50% Verschnitt/Wurzel)
         kg_filler_per_seam = (weld_volume_mm3 * 7.85) / 1_000_000 * 1.5 
         
         mat_cost = 0.0
         mat_text = ""
         
         if "CEL" in process:
-            # Elektroden-Verbrauch
             kg_electrodes_total = (5.0 * kg_filler_per_seam) * anz
             mat_cost = kg_electrodes_total * p_cel
             mat_text = "CEL Elektroden"
         else:
-            # Draht
             wire_cost = (kg_filler_per_seam * p_draht) * anz
-            # Gas (15l/min während reiner Schweißzeit)
             weld_time_only_min = (t_weld * factor) * anz
             gas_cost = weld_time_only_min * 15 * p_gas
             
@@ -405,12 +329,9 @@ class CostEngine:
         p_stahl_disc: float,
         p_dia_disc: float
     ) -> Tuple[float, float, str]:
-        """
-        Detaillierte Trennkalkulation mit Scheibenverbrauch.
-        """
+        
         zoll = dn / 25.0
         
-        # Kapazität der Scheibe
         if "230" in disc_type:
             cap = 14000
         elif "180" in disc_type:
@@ -418,14 +339,12 @@ class CostEngine:
         else:
             cap = 3500
             
-        # Zeit-Faktoren
         zma_fac = 3.0 if is_zma else 1.0
         iso_fac = 1.3 if is_iso else 1.0
         
         base_time = zoll * 0.5
         t_total = base_time * zma_fac * iso_fac * factor * anz
         
-        # Material
         da = df_pipe[df_pipe['DN'] == dn].iloc[0]['D_Aussen']
         area_mm2 = da * math.pi * ws
         
@@ -485,37 +404,33 @@ class Visualizer:
         fig = plt.figure(figsize=(6, 5))
         ax = fig.add_subplot(111, projection='3d')
         
-        # Koordinaten
         xs = [0, length]
         ys = [0, width]
         zs = [0, height]
         
-        # Rohr
         ax.plot(xs, ys, zs, color='#ef4444', linewidth=5, solid_capstyle='round')
         
-        # Box
         ax.plot([0, length], [0, 0], [0, 0], 'k--', alpha=0.2)
         ax.plot([length, length], [0, width], [0, 0], 'k--', alpha=0.2)
         ax.plot([0, length], [width, width], [0, 0], 'k--', alpha=0.1)
         ax.plot([length, length], [width, width], [0, height], 'k--', alpha=0.3)
         
-        # Punkte
         ax.scatter([0], [0], [0], color='black', s=50)
         ax.scatter([length], [width], [height], color='#10b981', s=50)
         
-        # Labels
         ax.set_xlabel('L')
         ax.set_ylabel('B')
         ax.set_zlabel('H')
         
-        # Scale
-        m = max(abs(length), abs(width), abs(height))
-        if m == 0: m = 100
-        ax.set_xlim(0, m)
-        ax.set_ylim(0, m)
-        ax.set_zlim(0, m)
+        max_dim = max(abs(length), abs(width), abs(height))
+        if max_dim == 0:
+            max_dim = 100
+        ax.set_xlim(0, max_dim)
+        ax.set_ylim(0, max_dim)
+        ax.set_zlim(0, max_dim)
         
         ax.view_init(elev=elev, azim=azim)
+        
         plt.tight_layout()
         return fig
 
@@ -598,7 +513,7 @@ class DatabaseRepository:
             conn.cursor().execute('UPDATE inventory SET current_stock=? WHERE article_id=?', (qty, id))
             conn.commit()
 
-# --- Export ---
+# --- Export Helpers ---
 def export_excel(df):
     out = BytesIO()
     with pd.ExcelWriter(out, engine='openpyxl') as writer:
@@ -698,7 +613,7 @@ row = get_row_by_dn(selected_dn_global)
 standard_radius = float(row['Radius_BA3'])
 suffix = "_16" if selected_pn == "PN 16" else "_10"
 
-st.title("PipeCraft V33.0")
+st.title("PipeCraft V33.1")
 st.caption(f"🔧 Aktive Konfiguration: DN {selected_dn_global} | {selected_pn} | Radius: {standard_radius} mm")
 
 # Tabs
@@ -757,14 +672,14 @@ with tab_werk:
         # NEU: Dimension wählen (Standard = Globaler DN)
         f_dn = col_f2.selectbox("DN", df_pipe['DN'], index=df_pipe['DN'].tolist().index(selected_dn_global))
         
-        # Winkel-Input nur wenn nötig
+        # Winkel nur bei Bogen Zuschnitt
         f_angle = 45.0
         if "Zuschnitt" in f_type:
-            f_angle = col_f3.number_input("Winkel", 45.0)
+            f_angle = col_f3.number_input("Winkel", value=45.0, step=1.0)
         else:
             col_f3.write("-")
             
-        f_count = col_f4.number_input("Anzahl", 1, min_value=1)
+        f_count = col_f4.number_input("Anzahl", value=1, min_value=1, step=1)
         
         if st.button("Hinzufügen (+)", type="secondary"):
             # Hole Abzugsmaß für die SPEZIFISCH gewählte DN
@@ -853,30 +768,30 @@ with tab_werk:
         
         with c_c:
             if et_type == "2D":
-                h = st.number_input("H", 300)
-                l = st.number_input("L", 400)
+                h = st.number_input("Höhe H", value=300)
+                l = st.number_input("Länge L", value=400)
                 t, a = GeometryEngine.solve_offset_3d(h, l, 0)
                 st.markdown(f"<div class='result-card-green'>Säge: {round(t, 1)} mm</div>", unsafe_allow_html=True)
                 st.pyplot(Visualizer.plot_true_3d_pipe(l, 0, h, az, el))
                 
             elif et_type == "Kastenmaß":
-                b = st.number_input("B", 200)
-                h = st.number_input("H", 300)
-                l = st.number_input("L", 400)
+                b = st.number_input("Breite B", value=200)
+                h = st.number_input("Höhe H", value=300)
+                l = st.number_input("Länge L", value=400)
                 t, a = GeometryEngine.solve_offset_3d(h, l, b)
                 st.markdown(f"<div class='result-card-green'>Säge: {round(t, 1)} mm</div>", unsafe_allow_html=True)
                 st.pyplot(Visualizer.plot_true_3d_pipe(l, b, h, az, el))
                 
             else:
-                b = st.number_input("B", 200)
-                h = st.number_input("H", 300)
+                b = st.number_input("Breite B", value=200)
+                h = st.number_input("Höhe H", value=300)
                 w = st.selectbox("Winkel", [30, 45, 60])
                 
                 s = math.sqrt(b**2 + h**2)
                 l_req = s / math.tan(math.radians(w))
                 t = math.sqrt(l_req**2 + s**2)
                 
-                st.info(f"Länge L: {round(l_req, 1)} mm")
+                st.info(f"Länge L nötig: {round(l_req, 1)} mm")
                 st.markdown(f"<div class='result-card-green'>Säge: {round(t, 1)} mm</div>", unsafe_allow_html=True)
                 st.pyplot(Visualizer.plot_true_3d_pipe(l_req, b, h, az, el))
 
@@ -891,7 +806,7 @@ with tab_proj:
         datum = c3.date_input("Datum")
         c4, c5 = st.columns(2)
         dn_s = c4.selectbox("DN", df_pipe['DN'])
-        len_s = c5.number_input("Länge", 0)
+        len_s = c5.number_input("Länge", value=0)
         
         if st.form_submit_button("Speichern"):
             DatabaseRepository.add("rohrbuch", (iso, naht, datum.strftime("%d.%m.%Y"), f"DN {dn_s}", "Rohr", len_s, "-", "-"))
@@ -900,7 +815,7 @@ with tab_proj:
     st.dataframe(DatabaseRepository.get_all("rohrbuch"), use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# TAB 4: KALKULATION (DETAIL RESTORED)
+# TAB 4: KALKULATION (RESTORED V23.3 DETAIL LOGIC)
 # -----------------------------------------------------------------------------
 with tab_info:
     st.subheader("Kalkulation (Detail)")
@@ -931,7 +846,7 @@ with tab_info:
         
         fac = st.slider("Erschwernis Faktor", 0.5, 2.0, 1.0)
         
-        # DETAILED CALC CALL
+        # Aufruf der detaillierten CostEngine
         dur_one, cost_total, mat_txt = CostEngine.calculate_welding_detailed(
             k_dn, k_ws, k_verf, pers, anz, fac,
             get_val('p_lohn'), get_val('p_machine'), get_val('p_draht'), get_val('p_cel'), get_val('p_gas')
@@ -954,9 +869,10 @@ with tab_info:
         disc = c3.selectbox("Scheibe", ["125 mm", "230 mm"], index=get_disc_idx(get_val('cut_disc')), key="_cut_disc", on_change=save_val, args=('cut_disc',))
         
         c4, c5 = st.columns(2)
-        anz = c4.number_input("Anzahl", 1, key="cut_anz")
+        anz = c4.number_input("Anzahl", value=1, key="cut_anz")
         zma = c5.checkbox("Beton (ZMA)?", key="cut_zma")
         
+        # Aufruf CostEngine
         t_tot, c_tot, info = CostEngine.calculate_cutting_detailed(
             c_dn, c_ws, disc, anz, zma, False, 1.0,
             get_val('p_lohn'), get_val('p_stahl'), get_val('p_dia')
@@ -980,21 +896,22 @@ with tab_info:
             st.rerun()
 
 # -----------------------------------------------------------------------------
-# TAB 5: LAGER
+# TAB 5: LAGERHALTUNG
 # -----------------------------------------------------------------------------
 with tab_lager:
     st.subheader("📦 Lagerhaltung")
-    c1, c2 = st.columns([1, 2])
     
-    with c1:
+    c_l1, c_l2 = st.columns([1, 2])
+    
+    with c_l1:
         st.markdown("##### Artikel anlegen")
         with st.form("new_inv"):
             aid = st.text_input("Artikel ID")
             name = st.text_input("Name")
-            pr = st.number_input("Preis", 0.0)
-            stk = st.number_input("Bestand", 0)
-            mn = st.number_input("Min", 10)
-            mx = st.number_input("Max", 100)
+            pr = st.number_input("Preis", value=0.0)
+            stk = st.number_input("Bestand", value=0)
+            mn = st.number_input("Min", value=10)
+            mx = st.number_input("Max", value=100)
             
             if st.form_submit_button("Speichern"):
                 if DatabaseRepository.add_inventory(InventoryItem(aid, name, pr, stk, mn, mx)):
@@ -1002,20 +919,20 @@ with tab_lager:
                 else:
                     st.error("Fehler: ID existiert")
     
-    with c2:
+    with c_l2:
         st.markdown("##### Buchung")
         inv = DatabaseRepository.get_inventory()
         if inv:
             opts = {f"{x.article_id} {x.name}": x for x in inv}
-            s = st.selectbox("Artikel wählen", list(opts.keys()))
-            am = st.number_input("Menge", 1)
+            sel = st.selectbox("Artikel wählen", list(opts.keys()))
+            amt = st.number_input("Menge", value=1)
             
             b1, b2 = st.columns(2)
             if b1.button("Eingang"):
-                DatabaseRepository.update_inventory(opts[s].article_id, opts[s].current_stock + am)
+                DatabaseRepository.update_inventory(opts[sel].article_id, opts[sel].current_stock + amt)
                 st.rerun()
             if b2.button("Ausgang"):
-                DatabaseRepository.update_inventory(opts[s].article_id, max(0, opts[s].current_stock - am))
+                DatabaseRepository.update_inventory(opts[sel].article_id, max(0, opts[sel].current_stock - amt))
                 st.rerun()
             
             # Tabelle
