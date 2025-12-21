@@ -1,13 +1,3 @@
-"""
-PipeCraft Enterprise Edition (V24.0)
-------------------------------------
-Eine professionelle Streamlit-Anwendung für den industriellen Rohrleitungsbau.
-Beinhaltet Berechnungen für Zuschnitt, Isometrie, Gewicht und Kostenkalkulation.
-
-Author: Senior Lead Software Engineer (AI)
-Date: 2023-12-21
-"""
-
 import streamlit as st
 import pandas as pd
 import math
