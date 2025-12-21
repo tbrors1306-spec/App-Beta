@@ -21,10 +21,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V6_3")
+logger = logging.getLogger("PipeCraft_Pro_V6_4")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 6.3",
+    page_title="Rohrbau Profi 6.4",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -291,13 +291,17 @@ class Exporter:
     @staticmethod
     def to_excel(df):
         output = BytesIO()
-        export_df = df.drop(columns=['Löschen', 'id'], errors='ignore')
+        # Filtercolumns based on content type (Logbook vs Sawlist)
+        # We drop known internal columns
+        cols_to_drop = ['Löschen', 'id', 'Auswahl']
+        export_df = df.drop(columns=[c for c in cols_to_drop if c in df.columns], errors='ignore')
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             export_df.to_excel(writer, index=False, sheet_name='Daten')
         return output.getvalue()
 
     @staticmethod
-    def to_pdf(df):
+    def to_pdf_logbook(df):
+        """Spezifischer Export für Rohrbuch"""
         if not PDF_AVAILABLE: return b""
         pdf = FPDF(orientation='L', unit='mm', format='A4')
         pdf.add_page()
@@ -325,30 +329,61 @@ class Exporter:
             pdf.ln()
         return pdf.output(dest='S').encode('latin-1')
 
+    @staticmethod
+    def to_pdf_sawlist(df):
+        """Spezifischer Export für Sägeliste (V6.4 Neu)"""
+        if not PDF_AVAILABLE: return b""
+        pdf = FPDF(orientation='L', unit='mm', format='A4')
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 16)
+        pdf.cell(0, 10, f"Saegeauftrag - {datetime.now().strftime('%d.%m.%Y')}", 0, 1, 'C')
+        pdf.ln(5)
+        
+        # Sägeliste Spalten
+        cols = ["Bezeichnung", "Rohmass", "Saegemass", "Info", "Zeit"]
+        keys = ["name", "raw_length", "cut_length", "details", "timestamp"]
+        widths = [60, 30, 30, 80, 30]
+        
+        pdf.set_font("Arial", 'B', 10)
+        for i, c in enumerate(cols): pdf.cell(widths[i], 8, c, 1)
+        pdf.ln()
+        
+        pdf.set_font("Arial", size=10)
+        for _, row in df.iterrows():
+            for i, k in enumerate(keys):
+                val = str(row.get(k, ''))
+                # Special formatting for floats
+                if isinstance(row.get(k), float): val = f"{row.get(k):.1f}"
+                
+                try: pdf.cell(widths[i], 8, val.encode('latin-1','replace').decode('latin-1'), 1)
+                except: pdf.cell(widths[i], 8, "?", 1)
+            pdf.ln()
+        return pdf.output(dest='S').encode('latin-1')
+
 # -----------------------------------------------------------------------------
 # 4. UI SEITEN (TABS)
 # -----------------------------------------------------------------------------
 
 def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn: str):
-    st.subheader("🪚 Smarte Säge 6.3")
+    st.subheader("🪚 Smarte Säge 6.4")
     
-    # Init State
+    # State Init
     if 'fitting_list' not in st.session_state: st.session_state.fitting_list = []
     if 'saved_cuts' not in st.session_state: st.session_state.saved_cuts = []
     if 'next_cut_id' not in st.session_state: st.session_state.next_cut_id = 1
 
-    # Healing: Check if older SavedCut objects exist
+    # Healing
     if st.session_state.saved_cuts:
         try: _ = st.session_state.saved_cuts[0].name
         except AttributeError: st.session_state.saved_cuts = []
 
-    # Check Transfer from Geometry
+    # Transfer-Check
     default_raw = 0.0
     if 'transfer_cut_length' in st.session_state:
         default_raw = st.session_state.pop('transfer_cut_length')
         st.toast("✅ Maß aus Geometrie übernommen!", icon="📏")
 
-    c_calc, c_list = st.columns([1.4, 1.6])
+    c_calc, c_list = st.columns([1.3, 1.7])
 
     with c_calc:
         with st.container(border=True):
@@ -421,47 +456,80 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                         st.success("Gespeichert!")
                         st.rerun()
 
-    # --- RECHTE SPALTE: LISTE V6.3 ---
+    # --- RECHTE SPALTE: LISTE V6.4 ---
     with c_list:
-        st.markdown("#### 📋 Schnittliste")
+        st.markdown("#### 📋 Schnittliste & Export")
         
         if not st.session_state.saved_cuts:
             st.info("Noch keine Schnitte vorhanden.")
         else:
-            # Custom Rendering für die Liste mit Transfer-Button
-            st.markdown("---")
-            for cut in st.session_state.saved_cuts:
-                col_info, col_res, col_act = st.columns([2, 1.5, 1])
-                
-                with col_info:
-                    st.write(f"**{cut.name}**")
-                    st.caption(f"{cut.details} | {cut.timestamp}")
-                
-                with col_res:
-                    st.markdown(f"✂️ **{cut.cut_length:.1f}**")
-                    st.caption(f"Roh: {cut.raw_length:.0f}")
-                
-                with col_act:
-                    # FEATURE V6.3: Transfer Button
-                    if st.button("📝", key=f"trans_{cut.id}", help="Daten ins Rohrbuch übernehmen"):
-                        st.session_state.logbook_defaults = {
-                            'iso': cut.name,
-                            'len': cut.cut_length
-                        }
-                        st.toast(f"'{cut.name}' ins Rohrbuch kopiert! Bitte Tab wechseln.", icon="📋")
-            
-            st.markdown("---")
-            
-            # Löschen Verwaltung (Optional noch Data Editor, aber Buttons sind hier besser für den Workflow)
-            if st.button("Alle löschen (Reset Liste)"):
-                st.session_state.saved_cuts = []
-                st.rerun()
-                
-            # CSV
+            # Dataframe erstellen
             data = [asdict(c) for c in st.session_state.saved_cuts]
             df_s = pd.DataFrame(data)
-            csv = df_s.to_csv(sep=";", decimal=",", index=False).encode('utf-8')
-            st.download_button("📥 Liste als CSV", csv, "saegeliste.csv", "text/csv", use_container_width=True)
+            
+            # V6.4 FEATURE: Auswahl für Aktionen
+            df_s['Auswahl'] = False
+            
+            # Anzeige optimieren
+            df_display = df_s[['Auswahl', 'name', 'raw_length', 'cut_length', 'details', 'id']]
+
+            edited_df = st.data_editor(
+                df_display,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Auswahl": st.column_config.CheckboxColumn("☑️", width="small"),
+                    "name": st.column_config.TextColumn("Bez.", width="medium"),
+                    "raw_length": st.column_config.NumberColumn("Roh", format="%.0f"),
+                    "cut_length": st.column_config.NumberColumn("Säge", format="%.1f", width="medium"),
+                    "details": st.column_config.TextColumn("Info", width="small"),
+                    "id": None 
+                },
+                disabled=["name", "raw_length", "cut_length", "details", "id"],
+                key="saw_editor_v64"
+            )
+
+            # --- AKTIONEN AUF AUSWAHL ---
+            selected_rows = edited_df[edited_df['Auswahl'] == True]
+            selected_ids = selected_rows['id'].tolist()
+            
+            if selected_ids:
+                st.info(f"{len(selected_ids)} Element(e) ausgewählt:")
+                col_del, col_trans = st.columns(2)
+                
+                # Button 1: Löschen (V6.2 Feature restored)
+                if col_del.button(f"🗑️ Löschen", type="primary", use_container_width=True):
+                    st.session_state.saved_cuts = [c for c in st.session_state.saved_cuts if c.id not in selected_ids]
+                    st.rerun()
+                
+                # Button 2: Transfer (V6.3 Feature kept)
+                if col_trans.button(f"📝 Ins Rohrbuch", help="Kopiert ersten gewählten Schnitt ins Rohrbuch", use_container_width=True):
+                    # Wir nehmen den ersten der Auswahl
+                    first_id = selected_ids[0]
+                    cut_to_transfer = next((c for c in st.session_state.saved_cuts if c.id == first_id), None)
+                    if cut_to_transfer:
+                        st.session_state.logbook_defaults = {
+                            'iso': cut_to_transfer.name,
+                            'len': cut_to_transfer.cut_length
+                        }
+                        st.toast(f"'{cut_to_transfer.name}' kopiert! Bitte Tab wechseln.", icon="📋")
+
+            # --- EXPORT BEREICH (V6.4 NEU) ---
+            st.divider()
+            ce1, ce2 = st.columns(2)
+            
+            # Excel
+            excel_data = Exporter.to_excel(df_s)
+            ce1.download_button("📥 Excel", excel_data, "saegeliste.xlsx", use_container_width=True)
+            
+            # PDF
+            if PDF_AVAILABLE:
+                pdf_data = Exporter.to_pdf_sawlist(df_s)
+                ce2.download_button("📄 PDF", pdf_data, "saegeliste.pdf", use_container_width=True)
+            
+            if st.button("Alles Reset (Liste leeren)"):
+                st.session_state.saved_cuts = []
+                st.rerun()
 
 def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
     st.subheader("📐 Geometrie V6.1")
@@ -547,7 +615,6 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
 def render_logbook(df_pipe: pd.DataFrame):
     st.subheader("📝 Digitales Rohrbuch")
     
-    # FEATURE V6.3: Check for transferred data
     defaults = st.session_state.get('logbook_defaults', {})
     def_iso = defaults.get('iso', '')
     def_len = defaults.get('len', 0.0)
@@ -555,24 +622,15 @@ def render_logbook(df_pipe: pd.DataFrame):
     with st.expander("Eintrag hinzufügen", expanded=True):
         with st.form("lb_new"):
             c1, c2, c3 = st.columns(3)
-            # Use transferred values if available
             iso = c1.text_input("ISO / Bez.", value=def_iso)
             naht = c2.text_input("Naht")
             dat = c3.date_input("Datum")
-            
             c4, c5, c6 = st.columns(3)
-            # Set default component if transfer happened
             def_idx = 0 
-            if def_iso: def_idx = 5 # Set to "Passstück" (index 5 approx) if transfer
-            
+            if def_iso: def_idx = 5 
             bt = c4.selectbox("Bauteil", ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Stutzen", "Passstück"], index=def_idx)
             dn = c5.selectbox("Dimension", df_pipe['DN'], index=8)
-            
-            # Length input from transfer
-            laenge = 0.0
-            if def_len > 0: laenge = def_len
-            laenge_in = c6.number_input("Länge (mm)", value=float(laenge)) # Explicit float for input
-            
+            laenge_in = c6.number_input("Länge (mm)", value=float(def_len if def_len > 0 else 0.0)) 
             ch = st.text_input("Charge")
             c7, c8 = st.columns(2)
             apz = c7.text_input("APZ / Zeugnis")
@@ -584,7 +642,6 @@ def render_logbook(df_pipe: pd.DataFrame):
                     "dimension": f"DN {dn}", "bauteil": bt, "laenge": laenge_in,
                     "charge": ch, "charge_apz": apz, "schweisser": sch
                 })
-                # Clear defaults after save
                 if 'logbook_defaults' in st.session_state: del st.session_state['logbook_defaults']
                 st.success("Gespeichert")
                 st.rerun()
@@ -594,7 +651,7 @@ def render_logbook(df_pipe: pd.DataFrame):
     if not df.empty:
         ce1, ce2, _ = st.columns([1,1,3])
         ce1.download_button("📥 Excel", Exporter.to_excel(df), "rohrbuch.xlsx")
-        if PDF_AVAILABLE: ce2.download_button("📄 PDF", Exporter.to_pdf(df), "rohrbuch.pdf")
+        if PDF_AVAILABLE: ce2.download_button("📄 PDF", Exporter.to_pdf_logbook(df), "rohrbuch.pdf")
         edited = st.data_editor(df, hide_index=True, use_container_width=True, column_config={"Löschen": st.column_config.CheckboxColumn(default=False)}, disabled=["id", "iso", "naht", "datum", "dimension", "bauteil", "charge", "charge_apz", "schweisser"])
         to_del = edited[edited['Löschen'] == True]
         if not to_del.empty:
