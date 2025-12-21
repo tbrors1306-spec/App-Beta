@@ -1,8 +1,17 @@
+"""
+PipeCraft Enterprise Edition (V26.1 - Gold Standard + 3D Engine)
+----------------------------------------------------------------
+Based on V25.0 Architecture.
+Added: True 3D Isometry Visualization.
+"""
+
 import streamlit as st
 import pandas as pd
 import math
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+# NEU: 3D Toolkit
+from mpl_toolkits.mplot3d import Axes3D 
 import sqlite3
 import json
 import logging
@@ -25,7 +34,7 @@ except ImportError:
 # 1. CONFIGURATION & STYLING
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="PipeCraft V25.0",
+    page_title="PipeCraft V26.1",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -227,7 +236,7 @@ def calc_weight(dn_idx: int, ws: float, length_mm: float, is_zme: bool = False) 
         return 0.0
 
 # -----------------------------------------------------------------------------
-# 4. VISUALIZATION ENGINE
+# 4. VISUALIZATION ENGINE (NEU: MIT 3D)
 # -----------------------------------------------------------------------------
 
 def plot_stutzen_curve(r_haupt: float, r_stutzen: float) -> plt.Figure:
@@ -246,43 +255,52 @@ def plot_stutzen_curve(r_haupt: float, r_stutzen: float) -> plt.Figure:
     plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
     return fig
 
-def plot_etage_sketch(h: float, l: float, is_3d: bool = False, b: float = 0) -> plt.Figure:
-    """Zeichnet die 2D oder 3D Skizze der Etage."""
-    fig, ax = plt.subplots(figsize=(5, 3))
-    ax.plot(0, 0, 'o', color='black') # Startpunkt
+# NEU: Die 3D Engine
+def plot_true_3d_pipe(length: float, width: float, height: float, azim: int, elev: int) -> plt.Figure:
+    """
+    Rendert eine echte 3D-Szene der Rohrleitung.
+    """
+    fig = plt.figure(figsize=(6, 5))
+    ax = fig.add_subplot(111, projection='3d')
     
-    if not is_3d:
-        # 2D Logik
-        ax.plot([0, l], [0, 0], '--', color='gray', linewidth=1)
-        ax.plot([l, l], [0, h], '--', color='gray', linewidth=1)
-        ax.plot([0, l], [0, h], '-', color='#ef4444', linewidth=3, solid_capstyle='round')
-        ax.text(l/2, -h*0.1 if h!=0 else -10, f"L={l}", ha='center', fontsize=9)
-        ax.text(l + 10, h/2, f"H={h}", va='center', fontsize=9)
-    else:
-        # 3D Logik (Isometrischer Kasten)
-        # Versatzvektor für die Tiefe
-        dx, dy = b * 0.5, b * 0.3 
-        
-        # Bounding Box (Kasten)
-        ax.plot([0, l], [0, 0], 'k--', alpha=0.2) # Front L
-        ax.plot([l, l], [0, h], 'k--', alpha=0.2) # Front H
-        
-        ax.plot([0, dx], [0, dy], 'k--', alpha=0.2) # Tiefe Links
-        ax.plot([l, l+dx], [0, dy], 'k--', alpha=0.2) # Tiefe Rechts unten
-        ax.plot([dx, l+dx], [dy, dy], 'k--', alpha=0.2) # Back L
-        ax.plot([l+dx, l+dx], [dy, h+dy], 'k--', alpha=0.2) # Back H
-        ax.plot([l, l+dx], [h, h+dy], 'k--', alpha=0.2) # Tiefe Rechts oben
-        
-        # Das Rohr (Diagonale)
-        ax.plot([0, l+dx], [0, h+dy], '-', color='#ef4444', linewidth=4, solid_capstyle='round')
-        
-        # Beschriftung
-        ax.text(l/2, -20, f"L={l}", ha='center', fontsize=8)
-        ax.text(l+dx+15, h/2+dy, f"H={h}", va='center', fontsize=8)
-        ax.text(dx/2-15, dy/2, f"B={b}", ha='right', fontsize=8)
-
-    ax.axis('equal')
-    ax.axis('off')
+    # Koordinaten Start (0,0,0) -> Ende (L, B, H)
+    xs = [0, length]
+    ys = [0, width]
+    zs = [0, height]
+    
+    # Das Rohr (Vektor)
+    ax.plot(xs, ys, zs, color='#ef4444', linewidth=5, solid_capstyle='round', label='Rohrachse')
+    
+    # Bounding Box (Hilfslinien für räumliches Verständnis)
+    # Bodenprojektion
+    ax.plot([0, length], [0, 0], [0, 0], 'k--', alpha=0.2, lw=1) 
+    ax.plot([length, length], [0, width], [0, 0], 'k--', alpha=0.2, lw=1) 
+    ax.plot([0, length], [width, width], [0, 0], 'k--', alpha=0.1, lw=1) 
+    
+    # Vertikale Projektionen
+    ax.plot([length, length], [width, width], [0, height], 'k--', alpha=0.3, lw=1) 
+    
+    # Start- und Endpunkt
+    ax.scatter([0], [0], [0], color='black', s=50) # Start
+    ax.scatter([length], [width], [height], color='#10b981', s=50) # Ende
+    
+    # Beschriftung
+    ax.set_xlabel('Länge (L)')
+    ax.set_ylabel('Breite (B)')
+    ax.set_zlabel('Höhe (H)')
+    
+    # Aspect Ratio Hack für matplotlib 3D (damit es nicht verzerrt ist)
+    max_dim = max(abs(length), abs(width), abs(height))
+    if max_dim == 0: max_dim = 100 
+    
+    ax.set_xlim(0, max_dim)
+    ax.set_ylim(0, max_dim)
+    ax.set_zlim(0, max_dim)
+    
+    # Kamera View
+    ax.view_init(elev=elev, azim=azim)
+    
+    plt.tight_layout()
     return fig
 
 # -----------------------------------------------------------------------------
@@ -387,6 +405,7 @@ DEFAULT_STATE = {
     'iso_sys': "Schrumpfschlauch (WKS)", 'iso_dn': 200, 'iso_anz': 1, 'iso_factor': 1.0,
     'mon_dn': 200, 'mon_type': "Schieber", 'mon_anz': 1, 'mon_factor': 1.0,
     'reg_min': 60, 'reg_pers': 2, 'bogen_winkel': 45,
+    'view_azim': 45, 'view_elev': 30, # Default Kamerawinkel
     # Preise
     'p_lohn': 60.0, 'p_stahl': 2.5, 'p_dia': 45.0, 'p_cel': 0.40, 'p_draht': 15.0,
     'p_gas': 0.05, 'p_wks': 25.0, 'p_kebu1': 15.0, 'p_kebu2': 12.0, 'p_primer': 12.0, 'p_machine': 15.0
@@ -425,7 +444,7 @@ row = df[df['DN'] == selected_dn_global].iloc[0]
 standard_radius = float(row['Radius_BA3'])
 suffix = "_16" if selected_pn == "PN 16" else "_10"
 
-st.title("PipeCraft V25.0")
+st.title("PipeCraft V26.1")
 st.caption(f"🔧 Aktive Konfiguration: DN {selected_dn_global} | {selected_pn} | Radius: {standard_radius} mm")
 
 # Tabs
@@ -538,9 +557,17 @@ with tab_werk:
         et_type = st.radio("Typ", ["2D (Einfach)", "3D (Kastenmaß)", "3D (Fix-Winkel)"], horizontal=True, key="et_type")
         spalt_et = st.number_input("Spalt", 4, key="et_gap")
         
-        c_calc, c_vis = st.columns([1, 1])
+        c_calc, c_vis = st.columns([1, 1.5])
         weight_l = 0.0
         
+        # Kamera Controls für 3D
+        with c_vis:
+            st.caption("📷 Kamerasteuerung (Drehen)")
+            v1, v2 = st.columns(2)
+            azim = v1.slider("Horizontal", 0, 360, get_val('view_azim'), key="_view_azim", on_change=save_val, args=('view_azim',))
+            elev = v2.slider("Vertikal", 0, 90, get_val('view_elev'), key="_view_elev", on_change=save_val, args=('view_elev',))
+
+        # Berechnung Logic
         if "2D" in et_type:
             with c_calc:
                 h = st.number_input("Höhe H", 300, key="et2d_h")
@@ -553,7 +580,8 @@ with tab_werk:
                 st.markdown(f"<div class='result-card-green'>Säge: {round(erg, 1)} mm</div>", unsafe_allow_html=True)
                 weight_l = erg
             with c_vis:
-                st.pyplot(plot_etage_sketch(h, l))
+                # 2D wird als 3D ohne Tiefe gerendert
+                st.pyplot(plot_true_3d_pipe(l, 0, h, azim, elev))
         
         elif "Kastenmaß" in et_type:
             with c_calc:
@@ -562,14 +590,14 @@ with tab_werk:
                 l = st.number_input("Länge", 400, key="et3d_l")
                 # 3D Pythagoras
                 diag = math.sqrt(h**2 + l**2 + b**2)
-                spread = math.sqrt(b**2 + h**2)
-                winkel = math.degrees(math.atan(spread/l)) if l > 0 else 90
+                spread = math.sqrt(b**2 + l**2) # Korrektur: Spread ist Diagonale am Boden
+                winkel = math.degrees(math.atan(h/spread)) if spread > 0 else 90
                 abzug = 2 * (standard_radius * math.tan(math.radians(winkel/2)))
                 erg = diag - abzug - spalt_et
                 st.markdown(f"<div class='result-card-green'>Säge: {round(erg, 1)} mm</div>", unsafe_allow_html=True)
                 weight_l = erg
             with c_vis:
-                st.pyplot(plot_etage_sketch(h, l, True, b))
+                st.pyplot(plot_true_3d_pipe(l, b, h, azim, elev))
                 
         elif "Fix-Winkel" in et_type:
             with c_calc:
@@ -577,17 +605,26 @@ with tab_werk:
                 h = st.number_input("Höhe", 300, key="etfix_h")
                 fix_w = st.selectbox("Winkel", [15, 30, 45, 60, 90], index=2, key="etfix_w")
                 
-                spread = math.sqrt(b**2 + h**2)
-                l_req = spread / math.tan(math.radians(fix_w))
-                diag = math.sqrt(b**2 + h**2 + l_req**2)
+                spread = math.sqrt(b**2 + h**2) # Hier ist Spread die Hypotenuse im Raumdreieck für die Höhe? Nein, Achtung.
+                # Bei Fix-Winkel berechnen wir L_required
+                # Spread (Versatz) = sqrt(B^2 + H^2) wenn wir L suchen? 
+                # Annahme: Wir suchen L für einen 45° Etage mit Versatz B und Höhe H
+                # Versatz S = sqrt(B^2 + H^2). 
+                # L = S / tan(alpha).
+                
+                s_real = math.sqrt(b**2 + h**2)
+                l_req = s_real / math.tan(math.radians(fix_w))
+                
+                # Travel (Diagonale)
+                travel = math.sqrt(l_req**2 + s_real**2)
                 abzug = 2 * (standard_radius * math.tan(math.radians(fix_w/2)))
-                erg = diag - abzug - spalt_et
+                erg = travel - abzug - spalt_et
                 
                 st.info(f"Benötigte Länge L: {round(l_req, 1)} mm")
                 st.markdown(f"<div class='result-card-green'>Säge: {round(erg, 1)} mm</div>", unsafe_allow_html=True)
                 weight_l = erg
             with c_vis:
-                st.pyplot(plot_etage_sketch(h, l_req, True, b))
+                st.pyplot(plot_true_3d_pipe(l_req, b, h, azim, elev))
         
         # Gewichtsanzeige Etage
         if weight_l > 0:
