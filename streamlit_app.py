@@ -21,10 +21,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V6_4")
+logger = logging.getLogger("PipeCraft_Pro_V7_0")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 6.4",
+    page_title="Rohrbau Profi 7.0",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -35,7 +35,19 @@ st.markdown("""
     .main { background-color: #f8f9fa; }
     h1, h2, h3 { color: #1e293b; font-family: 'Segoe UI', sans-serif; }
     
-    /* Native Metriken Styling */
+    /* Project Badge Style */
+    .project-badge {
+        background-color: #e0f2fe;
+        color: #0369a1;
+        padding: 5px 10px;
+        border-radius: 12px;
+        font-size: 0.8rem;
+        font-weight: bold;
+        border: 1px solid #7dd3fc;
+        margin-bottom: 10px;
+        display: inline-block;
+    }
+
     div[data-testid="stMetric"] {
         background-color: #ffffff;
         border: 1px solid #e2e8f0;
@@ -77,42 +89,83 @@ def get_pipe_data() -> pd.DataFrame:
 DB_NAME = "rohrbau_profi.db"
 
 class DatabaseRepository:
-    """Verwaltet Datenbankoperationen."""
+    """Verwaltet Datenbankoperationen (V7.0 mit Projekten)."""
     
     @staticmethod
     def init_db():
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
+            
+            # 1. Haupttabelle Rohrbuch (falls noch nicht da)
             c.execute('''CREATE TABLE IF NOT EXISTS rohrbuch (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, 
                         iso TEXT, naht TEXT, datum TEXT, 
                         dimension TEXT, bauteil TEXT, laenge REAL, 
                         charge TEXT, charge_apz TEXT, schweisser TEXT)''')
             
+            # 2. Migration: Prüfen auf Spalten
             c.execute("PRAGMA table_info(rohrbuch)")
             cols = [info[1] for info in c.fetchall()]
+            
             if 'charge_apz' not in cols:
                 try: c.execute("ALTER TABLE rohrbuch ADD COLUMN charge_apz TEXT")
                 except: pass
+                
+            # V7.0 NEU: project_id Spalte
+            if 'project_id' not in cols:
+                try: c.execute("ALTER TABLE rohrbuch ADD COLUMN project_id INTEGER")
+                except: pass
+
+            # 3. Neue Tabelle: Projekte (V7.0)
+            c.execute('''CREATE TABLE IF NOT EXISTS projects (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name TEXT NOT NULL UNIQUE,
+                        created_at TEXT,
+                        status TEXT DEFAULT 'Aktiv')''')
+            
+            # Default-Projekt anlegen falls DB leer
+            c.execute("SELECT count(*) FROM projects")
+            if c.fetchone()[0] == 0:
+                c.execute("INSERT INTO projects (name, created_at) VALUES (?, ?)", ("Standard Projekt", datetime.now().strftime("%d.%m.%Y")))
+                
             conn.commit()
 
+    # --- PROJEKT METHODEN ---
+    @staticmethod
+    def create_project(name: str):
+        try:
+            with sqlite3.connect(DB_NAME) as conn:
+                conn.cursor().execute("INSERT INTO projects (name, created_at) VALUES (?, ?)", (name, datetime.now().strftime("%d.%m.%Y")))
+                conn.commit()
+            return True, "Projekt erstellt."
+        except sqlite3.IntegrityError:
+            return False, "Name existiert bereits."
+
+    @staticmethod
+    def get_projects() -> List[tuple]:
+        with sqlite3.connect(DB_NAME) as conn:
+            return conn.cursor().execute("SELECT id, name FROM projects ORDER BY id DESC").fetchall()
+
+    # --- ROHRBUCH METHODEN (V7.0: noch ohne Filter, aber bereit) ---
     @staticmethod
     def add_entry(data: dict):
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
+            # V7.0: project_id wird mitgespeichert
             c.execute('''INSERT INTO rohrbuch 
-                         (iso, naht, datum, dimension, bauteil, laenge, charge, charge_apz, schweisser) 
-                         VALUES (:iso, :naht, :datum, :dimension, :bauteil, :laenge, :charge, :charge_apz, :schweisser)''', 
+                         (iso, naht, datum, dimension, bauteil, laenge, charge, charge_apz, schweisser, project_id) 
+                         VALUES (:iso, :naht, :datum, :dimension, :bauteil, :laenge, :charge, :charge_apz, :schweisser, :project_id)''', 
                          data)
             conn.commit()
 
     @staticmethod
     def get_all() -> pd.DataFrame:
         with sqlite3.connect(DB_NAME) as conn:
+            # Hier fehlt noch der Filter (kommt in V7.1)
             df = pd.read_sql_query("SELECT * FROM rohrbuch ORDER BY id DESC", conn)
             if not df.empty: df['Löschen'] = False 
             else: 
-                df = pd.DataFrame(columns=["id", "iso", "naht", "datum", "dimension", "bauteil", "laenge", "charge", "charge_apz", "schweisser", "Löschen"])
+                df = pd.DataFrame(columns=["id", "iso", "naht", "datum", "dimension", "bauteil", "laenge", "charge", "charge_apz", "schweisser", "project_id", "Löschen"])
             return df
 
     @staticmethod
@@ -291,17 +344,13 @@ class Exporter:
     @staticmethod
     def to_excel(df):
         output = BytesIO()
-        # Filtercolumns based on content type (Logbook vs Sawlist)
-        # We drop known internal columns
-        cols_to_drop = ['Löschen', 'id', 'Auswahl']
-        export_df = df.drop(columns=[c for c in cols_to_drop if c in df.columns], errors='ignore')
+        export_df = df.drop(columns=['Löschen', 'id', 'Auswahl', 'project_id'], errors='ignore')
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             export_df.to_excel(writer, index=False, sheet_name='Daten')
         return output.getvalue()
 
     @staticmethod
     def to_pdf_logbook(df):
-        """Spezifischer Export für Rohrbuch"""
         if not PDF_AVAILABLE: return b""
         pdf = FPDF(orientation='L', unit='mm', format='A4')
         pdf.add_page()
@@ -314,7 +363,7 @@ class Exporter:
         for i, c in enumerate(cols): pdf.cell(widths[i], 8, c, 1)
         pdf.ln()
         pdf.set_font("Arial", size=8)
-        export_df = df.drop(columns=['Löschen', 'id'], errors='ignore')
+        export_df = df.drop(columns=['Löschen', 'id', 'project_id'], errors='ignore')
         for _, row in export_df.iterrows():
             def g(k): 
                 if k.lower() in row: return str(row[k.lower()])
@@ -331,30 +380,23 @@ class Exporter:
 
     @staticmethod
     def to_pdf_sawlist(df):
-        """Spezifischer Export für Sägeliste (V6.4 Neu)"""
         if not PDF_AVAILABLE: return b""
         pdf = FPDF(orientation='L', unit='mm', format='A4')
         pdf.add_page()
         pdf.set_font("Arial", 'B', 16)
         pdf.cell(0, 10, f"Saegeauftrag - {datetime.now().strftime('%d.%m.%Y')}", 0, 1, 'C')
         pdf.ln(5)
-        
-        # Sägeliste Spalten
         cols = ["Bezeichnung", "Rohmass", "Saegemass", "Info", "Zeit"]
         keys = ["name", "raw_length", "cut_length", "details", "timestamp"]
         widths = [60, 30, 30, 80, 30]
-        
         pdf.set_font("Arial", 'B', 10)
         for i, c in enumerate(cols): pdf.cell(widths[i], 8, c, 1)
         pdf.ln()
-        
         pdf.set_font("Arial", size=10)
         for _, row in df.iterrows():
             for i, k in enumerate(keys):
                 val = str(row.get(k, ''))
-                # Special formatting for floats
                 if isinstance(row.get(k), float): val = f"{row.get(k):.1f}"
-                
                 try: pdf.cell(widths[i], 8, val.encode('latin-1','replace').decode('latin-1'), 1)
                 except: pdf.cell(widths[i], 8, "?", 1)
             pdf.ln()
@@ -367,17 +409,14 @@ class Exporter:
 def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn: str):
     st.subheader("🪚 Smarte Säge 6.4")
     
-    # State Init
     if 'fitting_list' not in st.session_state: st.session_state.fitting_list = []
     if 'saved_cuts' not in st.session_state: st.session_state.saved_cuts = []
     if 'next_cut_id' not in st.session_state: st.session_state.next_cut_id = 1
 
-    # Healing
     if st.session_state.saved_cuts:
         try: _ = st.session_state.saved_cuts[0].name
         except AttributeError: st.session_state.saved_cuts = []
 
-    # Transfer-Check
     default_raw = 0.0
     if 'transfer_cut_length' in st.session_state:
         default_raw = st.session_state.pop('transfer_cut_length')
@@ -456,21 +495,16 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                         st.success("Gespeichert!")
                         st.rerun()
 
-    # --- RECHTE SPALTE: LISTE V6.4 ---
     with c_list:
         st.markdown("#### 📋 Schnittliste & Export")
         
         if not st.session_state.saved_cuts:
             st.info("Noch keine Schnitte vorhanden.")
         else:
-            # Dataframe erstellen
             data = [asdict(c) for c in st.session_state.saved_cuts]
             df_s = pd.DataFrame(data)
-            
-            # V6.4 FEATURE: Auswahl für Aktionen
             df_s['Auswahl'] = False
             
-            # Anzeige optimieren
             df_display = df_s[['Auswahl', 'name', 'raw_length', 'cut_length', 'details', 'id']]
 
             edited_df = st.data_editor(
@@ -489,7 +523,6 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                 key="saw_editor_v64"
             )
 
-            # --- AKTIONEN AUF AUSWAHL ---
             selected_rows = edited_df[edited_df['Auswahl'] == True]
             selected_ids = selected_rows['id'].tolist()
             
@@ -497,14 +530,11 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                 st.info(f"{len(selected_ids)} Element(e) ausgewählt:")
                 col_del, col_trans = st.columns(2)
                 
-                # Button 1: Löschen (V6.2 Feature restored)
                 if col_del.button(f"🗑️ Löschen", type="primary", use_container_width=True):
                     st.session_state.saved_cuts = [c for c in st.session_state.saved_cuts if c.id not in selected_ids]
                     st.rerun()
                 
-                # Button 2: Transfer (V6.3 Feature kept)
                 if col_trans.button(f"📝 Ins Rohrbuch", help="Kopiert ersten gewählten Schnitt ins Rohrbuch", use_container_width=True):
-                    # Wir nehmen den ersten der Auswahl
                     first_id = selected_ids[0]
                     cut_to_transfer = next((c for c in st.session_state.saved_cuts if c.id == first_id), None)
                     if cut_to_transfer:
@@ -514,15 +544,10 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                         }
                         st.toast(f"'{cut_to_transfer.name}' kopiert! Bitte Tab wechseln.", icon="📋")
 
-            # --- EXPORT BEREICH (V6.4 NEU) ---
             st.divider()
             ce1, ce2 = st.columns(2)
-            
-            # Excel
             excel_data = Exporter.to_excel(df_s)
             ce1.download_button("📥 Excel", excel_data, "saegeliste.xlsx", use_container_width=True)
-            
-            # PDF
             if PDF_AVAILABLE:
                 pdf_data = Exporter.to_pdf_sawlist(df_s)
                 ce2.download_button("📄 PDF", pdf_data, "saegeliste.pdf", use_container_width=True)
@@ -545,23 +570,19 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
             if st.button("Berechnen 🧮", type="primary"):
                 res = calc.calculate_2d_offset(dn, offset, angle)
                 st.session_state.calc_res_2d = res 
-        
         with c2:
             if 'calc_res_2d' in st.session_state:
                 res = st.session_state.calc_res_2d
-                if "error" in res:
-                    st.error(res["error"])
+                if "error" in res: st.error(res["error"])
                 else:
                     st.markdown("#### Ergebnis")
                     m1, m2 = st.columns(2)
-                    m1.metric("Zuschnitt (Rohr)", f"{res['cut_length']:.1f} mm")
+                    m1.metric("Zuschnitt", f"{res['cut_length']:.1f} mm")
                     m2.metric("Etagenlänge", f"{res['hypotenuse']:.1f} mm")
-                    st.info(f"* Abzug pro Bogen (Z): {res['z_mass_single']:.1f} mm\n* Versprung (H): {res['offset']:.1f} mm")
-                    
-                    if st.button("➡️ Maß an Säge senden", help="Überträgt den Zuschnitt in die Smarte Säge"):
+                    st.info(f"* Z-Maß: {res['z_mass_single']:.1f} mm\n* Versprung: {res['offset']:.1f} mm")
+                    if st.button("➡️ Maß an Säge senden"):
                         st.session_state.transfer_cut_length = res['cut_length']
-                        st.info("Wert kopiert! Wechsel zum Tab 'Smarte Säge'.")
-
+                        st.info("Wert kopiert!")
                     fig, ax = plt.subplots(figsize=(6, 2))
                     ax.plot([0, 100], [0, 0], 'k-', lw=3) 
                     x_end = 100 + res['run']
@@ -574,9 +595,9 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
     elif "3D Raum" in mode:
         c1, c2 = st.columns([1, 2])
         with c1:
-            roll = st.number_input("Roll [mm]", value=400.0)
-            set_val = st.number_input("Set [mm]", value=300.0)
-            height = st.number_input("Height [mm]", value=500.0)
+            roll = st.number_input("Roll", value=400.0)
+            set_val = st.number_input("Set", value=300.0)
+            height = st.number_input("Height", value=500.0)
         with c2:
             res = calc.calculate_rolling_offset(100, roll, set_val, height)
             mc1, mc2 = st.columns(2)
@@ -636,11 +657,15 @@ def render_logbook(df_pipe: pd.DataFrame):
             apz = c7.text_input("APZ / Zeugnis")
             sch = c8.text_input("Schweißer")
             
+            # V7.0 Feature Placeholder: project_id handling
+            active_pid = st.session_state.get('active_project_id', None)
+            
             if st.form_submit_button("Speichern 💾", type="primary"):
                 DatabaseRepository.add_entry({
                     "iso": iso, "naht": naht, "datum": dat.strftime("%d.%m.%Y"),
                     "dimension": f"DN {dn}", "bauteil": bt, "laenge": laenge_in,
-                    "charge": ch, "charge_apz": apz, "schweisser": sch
+                    "charge": ch, "charge_apz": apz, "schweisser": sch,
+                    "project_id": active_pid
                 })
                 if 'logbook_defaults' in st.session_state: del st.session_state['logbook_defaults']
                 st.success("Gespeichert")
@@ -648,11 +673,13 @@ def render_logbook(df_pipe: pd.DataFrame):
 
     st.divider()
     df = DatabaseRepository.get_all()
+    # Filter in V7.1 later
+    
     if not df.empty:
         ce1, ce2, _ = st.columns([1,1,3])
         ce1.download_button("📥 Excel", Exporter.to_excel(df), "rohrbuch.xlsx")
         if PDF_AVAILABLE: ce2.download_button("📄 PDF", Exporter.to_pdf_logbook(df), "rohrbuch.pdf")
-        edited = st.data_editor(df, hide_index=True, use_container_width=True, column_config={"Löschen": st.column_config.CheckboxColumn(default=False)}, disabled=["id", "iso", "naht", "datum", "dimension", "bauteil", "charge", "charge_apz", "schweisser"])
+        edited = st.data_editor(df, hide_index=True, use_container_width=True, column_config={"Löschen": st.column_config.CheckboxColumn(default=False)}, disabled=["id", "iso", "naht", "datum", "dimension", "bauteil", "charge", "charge_apz", "schweisser", "project_id"])
         to_del = edited[edited['Löschen'] == True]
         if not to_del.empty:
             if st.button(f"🗑️ {len(to_del)} löschen", type="primary"):
@@ -679,9 +706,9 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
         with c_in2:
             w_data = HandbookCalculator.calculate_weight(od, wt_input, len_input * 1000)
             mc1, mc2, mc3 = st.columns(3)
-            mc1.metric("Leergewicht (Stahl)", f"{w_data['total_steel']:.1f} kg", f"{w_data['kg_per_m_steel']:.1f} kg/m")
-            mc2.metric("Gewicht Gefüllt", f"{w_data['total_filled']:.1f} kg", "für Hydrotest")
-            mc3.metric("Füllvolumen", f"{w_data['volume_l']:.0f} Liter", "Wasserbedarf")
+            mc1.metric("Leergewicht", f"{w_data['total_steel']:.1f} kg", f"{w_data['kg_per_m_steel']:.1f} kg/m")
+            mc2.metric("Gefüllt", f"{w_data['total_filled']:.1f} kg", "Hydrotest")
+            mc3.metric("Volumen", f"{w_data['volume_l']:.0f} L")
 
     c_geo1, c_geo2 = st.columns(2)
     with c_geo1:
@@ -727,8 +754,8 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
         
         m1, m2, m3 = st.columns(3)
         m1.metric("Bolzen", f"{bolt} x {calc_len}", f"{n_holes} Stk.")
-        m2.metric("Schlüsselweite", f"SW {sw} mm", "Nuss/Ring")
-        m3.metric("Drehmoment", f"{torque} Nm", "Geschmiert" if is_lubed else "Trocken")
+        m2.metric("SW", f"{sw} mm")
+        m3.metric("Moment", f"{torque} Nm", "Geschmiert" if is_lubed else "Trocken")
 
 # -----------------------------------------------------------------------------
 # 5. MAIN
@@ -739,8 +766,15 @@ def main():
     df_pipe = get_pipe_data()
     calc = PipeCalculator(df_pipe)
 
+    # --- V7.0 Sidebar Structure (Placeholder for next step) ---
     with st.sidebar:
-        st.title("⚙️ Setup")
+        st.title("🏗️ Projekt")
+        
+        # Projekt-Selektor kommt hier in V7.0 hin
+        # aktuell nur Dummy / Global
+        
+        st.divider()
+        st.subheader("⚙️ Setup")
         dn = st.selectbox("Nennweite", df_pipe['DN'], index=8)
         pn = st.radio("Druckstufe", ["PN 16", "PN 10"], horizontal=True)
 
