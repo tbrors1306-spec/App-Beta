@@ -25,10 +25,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V10_1")
+logger = logging.getLogger("PipeCraft_Pro_V10_2")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 10.1",
+    page_title="Rohrbau Profi 10.2",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -221,9 +221,11 @@ class SavedCut:
 
 class PipeCalculator:
     def __init__(self, df: pd.DataFrame): self.df = df
+    
     def get_row(self, dn: int) -> pd.Series:
         row = self.df[self.df['DN'] == dn]
         return row.iloc[0] if not row.empty else self.df.iloc[0]
+    
     def get_deduction(self, f_type: str, dn: int, pn: str, angle: float = 90.0) -> float:
         row = self.get_row(dn)
         suffix = "_16" if pn == "PN 16" else "_10"
@@ -233,12 +235,14 @@ class PipeCalculator:
         if "T-Stück" in f_type: return float(row['T_Stueck_H'])
         if "Reduzierung" in f_type: return float(row['Red_Laenge_L'])
         return 0.0
+    
     def calculate_bend_details(self, dn: int, angle: float) -> Dict[str, float]:
         row = self.get_row(dn)
         r = float(row['Radius_BA3'])
         da = float(row['D_Aussen'])
         rad = math.radians(angle)
         return {"vorbau": r * math.tan(rad / 2), "bogen_aussen": (r + da/2) * rad, "bogen_mitte": r * rad, "bogen_innen": (r - da/2) * rad}
+    
     def calculate_stutzen_coords(self, dn_haupt: int, dn_stutzen: int) -> pd.DataFrame:
         r_main = self.get_row(dn_haupt)['D_Aussen'] / 2
         r_stub = self.get_row(dn_stutzen)['D_Aussen'] / 2
@@ -252,6 +256,7 @@ class PipeCalculator:
             u_val = (r_stub * 2 * math.pi) * (angle / 360)
             table_data.append({"Winkel": f"{angle}°", "Tiefe (mm)": round(t_val, 1), "Umfang (mm)": round(u_val, 1)})
         return pd.DataFrame(table_data)
+    
     def calculate_2d_offset(self, dn: int, offset: float, angle: float) -> Dict[str, float]:
         row = self.get_row(dn)
         r = float(row['Radius_BA3'])
@@ -262,12 +267,14 @@ class PipeCalculator:
         except: return {"error": "Winkel 0"}
         z_mass = r * math.tan(rad / 2)
         return {"hypotenuse": hypotenuse, "run": run, "z_mass_single": z_mass, "cut_length": hypotenuse - (2*z_mass), "offset": offset, "angle": angle}
+    
     def calculate_rolling_offset(self, dn: int, roll: float, set_val: float, height: float = 0.0) -> Dict[str, float]:
         diag_base = math.sqrt(roll**2 + set_val**2)
         travel = math.sqrt(diag_base**2 + height**2)
         try: required_angle = math.degrees(math.acos(diag_base / travel)) if travel != 0 else 0
         except: required_angle = 0
         return {"travel": travel, "diag_base": diag_base, "angle_calc": required_angle}
+    
     def calculate_segment_bend(self, dn: int, radius: float, num_segments: int, total_angle: float = 90.0) -> Dict[str, float]:
         row = self.get_row(dn)
         od = float(row['D_Aussen'])
@@ -479,21 +486,26 @@ class Exporter:
         pdf.ln(5)
         
         # Group by APZ
+        # Clean up APZ column
         df_log['charge_apz'] = df_log['charge_apz'].fillna('OHNE NACHWEIS').replace('', 'OHNE NACHWEIS')
         groups = df_log.groupby('charge_apz')
         
         pdf.set_font("Arial", size=10)
         
         for apz, group in groups:
+            # Header per APZ
             pdf.set_fill_color(230, 230, 230)
             pdf.set_font("Arial", 'B', 10)
             pdf.cell(0, 8, f"Charge / APZ: {apz}", 1, 1, 'L', fill=True)
             
+            # Items
             pdf.set_font("Arial", size=9)
+            # Aggregate group items for cleaner list: "3x Bogen DN100" instead of 3 lines
             agg = group.groupby(['dimension', 'bauteil']).size().reset_index(name='count')
             
             for _, row in agg.iterrows():
                 txt = f"   {row['count']}x {row['bauteil']} {row['dimension']}"
+                # Get example ISOs
                 isos = group[(group['dimension']==row['dimension']) & (group['bauteil']==row['bauteil'])]['iso'].unique()
                 iso_txt = ", ".join(isos[:3])
                 if len(isos) > 3: iso_txt += "..."
@@ -945,70 +957,61 @@ def render_logbook(df_pipe: pd.DataFrame):
     # READ ONLY CHECK
     if not is_archived:
         with st.expander("Eintrag hinzufügen", expanded=True):
-            # V10.1: Kein st.form mehr für interaktive Inputs!
-            c1, c2, c3 = st.columns(3)
-            iso_known = DatabaseRepository.get_known_values('iso', active_pid)
-            
-            # ISO SELECT
-            iso_val = ""
-            if iso_known:
-                iso_sel = c1.selectbox("ISO / Bez.", ["✨ Neu / Manuell"] + iso_known)
-                if iso_sel == "✨ Neu / Manuell":
-                    iso_val = c1.text_input("ISO manuell", value=def_iso)
-                else:
-                    iso_val = iso_sel
-            else:
-                iso_val = c1.text_input("ISO / Bez.", value=def_iso)
-
-            naht_val = c2.text_input("Naht")
-            dat_val = c3.date_input("Datum")
-            
-            c4, c5, c6 = st.columns(3)
-            def_idx = 0 
-            if def_iso: def_idx = 5 
-            bt_val = c4.selectbox("Bauteil", ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Stutzen", "Passstück", "Nippel", "Muffe"], index=def_idx)
-            dn_val = c5.selectbox("Dimension", df_pipe['DN'], index=8)
-            len_val = c6.number_input("Länge (mm)", value=float(def_len if def_len > 0 else 0.0)) 
-            
-            c7, c8 = st.columns(2)
-            
-            # APZ SELECT
-            apz_val = ""
-            apz_known = DatabaseRepository.get_known_values('charge_apz', active_pid)
-            with c7:
-                if apz_known:
-                    apz_sel = st.selectbox("APZ (Auswahl)", ["✨ Neu / Manuell"] + apz_known)
-                    if apz_sel == "✨ Neu / Manuell":
-                        apz_val = st.text_input("APZ (Eingabe)")
+            with st.form("lb_new"):
+                c1, c2, c3 = st.columns(3)
+                iso_known = DatabaseRepository.get_known_values('iso', active_pid)
+                if iso_known:
+                    iso_sel = c1.selectbox("ISO / Bez.", ["✨ Neu / Manuell"] + iso_known)
+                    if iso_sel == "✨ Neu / Manuell":
+                        iso = c1.text_input("ISO manuell", value=def_iso, label_visibility="collapsed")
                     else:
-                        apz_val = apz_sel
+                        iso = iso_sel
                 else:
-                    apz_val = st.text_input("APZ / Zeugnis")
+                    iso = c1.text_input("ISO / Bez.", value=def_iso)
 
-            # SCHWEISSER SELECT
-            sch_val = ""
-            sch_known = DatabaseRepository.get_known_values('schweisser', active_pid)
-            with c8:
-                if sch_known:
-                    sch_sel = st.selectbox("Schweißer (Auswahl)", ["✨ Neu / Manuell"] + sch_known)
-                    if sch_sel == "✨ Neu / Manuell":
-                        sch_val = st.text_input("Schweißer (Eingabe)")
+                naht = c2.text_input("Naht")
+                dat = c3.date_input("Datum")
+                
+                c4, c5, c6 = st.columns(3)
+                def_idx = 0 
+                if def_iso: def_idx = 5 
+                bt = c4.selectbox("Bauteil", ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Stutzen", "Passstück", "Nippel", "Muffe"], index=def_idx)
+                dn = c5.selectbox("Dimension", df_pipe['DN'], index=8)
+                laenge_in = c6.number_input("Länge (mm)", value=float(def_len if def_len > 0 else 0.0)) 
+                
+                c7, c8 = st.columns(2)
+                apz_known = DatabaseRepository.get_known_values('charge_apz', active_pid)
+                with c7:
+                    if apz_known:
+                        apz_sel = st.selectbox("APZ (Auswahl)", ["✨ Neu / Manuell"] + apz_known)
+                        if apz_sel == "✨ Neu / Manuell":
+                            apz = st.text_input("APZ (Eingabe)", label_visibility="collapsed")
+                        else:
+                            apz = apz_sel
                     else:
-                        sch_val = sch_sel
-                else:
-                    sch_val = st.text_input("Schweißer")
-            
-            # Speichern Button (Außerhalb Form)
-            if st.button("Speichern 💾", type="primary"):
-                DatabaseRepository.add_entry({
-                    "iso": iso_val, "naht": naht_val, "datum": dat_val.strftime("%d.%m.%Y"),
-                    "dimension": f"DN {dn_val}", "bauteil": bt_val, "laenge": len_val,
-                    "charge": "", "charge_apz": apz_val, "schweisser": sch_val,
-                    "project_id": active_pid
-                })
-                if 'logbook_defaults' in st.session_state: del st.session_state['logbook_defaults']
-                st.success("Gespeichert")
-                st.rerun()
+                        apz = st.text_input("APZ / Zeugnis")
+
+                sch_known = DatabaseRepository.get_known_values('schweisser', active_pid)
+                with c8:
+                    if sch_known:
+                        sch_sel = st.selectbox("Schweißer (Auswahl)", ["✨ Neu / Manuell"] + sch_known)
+                        if sch_sel == "✨ Neu / Manuell":
+                            sch = st.text_input("Schweißer (Eingabe)", label_visibility="collapsed")
+                        else:
+                            sch = sch_sel
+                    else:
+                        sch = st.text_input("Schweißer")
+                
+                if st.form_submit_button("Speichern 💾", type="primary"):
+                    DatabaseRepository.add_entry({
+                        "iso": iso, "naht": naht, "datum": dat.strftime("%d.%m.%Y"),
+                        "dimension": f"DN {dn}", "bauteil": bt, "laenge": laenge_in,
+                        "charge": "", "charge_apz": apz, "schweisser": sch,
+                        "project_id": active_pid
+                    })
+                    if 'logbook_defaults' in st.session_state: del st.session_state['logbook_defaults']
+                    st.success("Gespeichert")
+                    st.rerun()
 
     st.divider()
     
@@ -1025,35 +1028,44 @@ def render_logbook(df_pipe: pd.DataFrame):
         disable_cols = ["dimension", "bauteil", "laenge", "iso"]
         if is_archived: disable_cols = df_display.columns.tolist() 
         
+        # V10.2: KEY Management to break loops
+        if "editor_key" not in st.session_state: st.session_state.editor_key = 0
+        
         edited_df = st.data_editor(
             df_display, 
             hide_index=True, 
             use_container_width=True, 
             column_config={
                 "Löschen": st.column_config.CheckboxColumn(default=False, disabled=bool(is_archived)),
-                "id": None, "project_id": None
+                "id": None, 
+                "project_id": None
             },
             disabled=disable_cols,
-            key="logbook_editor"
+            key=f"logbook_editor_{st.session_state.editor_key}" # UNIQUE KEY PER EDIT
         )
         
-        if not is_archived and "logbook_editor" in st.session_state:
-            changes = st.session_state["logbook_editor"].get("edited_rows", {})
+        # Check changes
+        current_key = f"logbook_editor_{st.session_state.editor_key}"
+        if not is_archived and current_key in st.session_state:
+            changes = st.session_state[current_key].get("edited_rows", {})
             if changes:
                 for idx, change_dict in changes.items():
                     real_id = df.iloc[idx]['id']
                     for col, val in change_dict.items():
                         if col == "Löschen": continue
                         DatabaseRepository.update_cell(real_id, col, val)
-                st.toast("Änderungen gespeichert!", icon="💾")
-                time.sleep(0.5) # Kurze Pause für UX
-                st.rerun() # Refresh erzwingen für Health-Check Sync
+                
+                st.toast("Gespeichert!", icon="✅")
+                # INCREMENT KEY TO RESET EDITOR STATE AND BREAK LOOP
+                st.session_state.editor_key += 1
+                st.rerun()
                 
         if not is_archived:
             to_del = edited_df[edited_df['Löschen'] == True]
             if not to_del.empty:
                 if st.button(f"🗑️ {len(to_del)} Einträge löschen", type="primary"):
                     DatabaseRepository.delete_entries(to_del['id'].tolist())
+                    st.session_state.editor_key += 1
                     st.rerun()
     else:
         st.info(f"Keine Einträge für Projekt '{proj_name}'.")
@@ -1211,10 +1223,10 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
 # -----------------------------------------------------------------------------
 
 def main():
-    if 'v10_1_migration_done' not in st.session_state:
+    if 'v10_2_migration_done' not in st.session_state:
         st.session_state.saved_cuts = []
         st.session_state.fitting_list = []
-        st.session_state.v10_1_migration_done = True
+        st.session_state.v10_2_migration_done = True
         st.rerun()
 
     DatabaseRepository.init_db()
