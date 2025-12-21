@@ -24,10 +24,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V9_6")
+logger = logging.getLogger("PipeCraft_Pro_V9_6_2")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 9.6",
+    page_title="Rohrbau Profi 9.6.2",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -176,7 +176,6 @@ class FittingItem:
     @property
     def total_deduction(self) -> float: return self.deduction_single * self.count
 
-# UPDATE V9.6: SavedCut speichert jetzt auch die Bauteile!
 @dataclass
 class SavedCut:
     id: int
@@ -185,7 +184,7 @@ class SavedCut:
     cut_length: float
     details: str
     timestamp: str
-    fittings: List[FittingItem] = field(default_factory=list) # Neu: Liste der Bauteile
+    fittings: List[FittingItem] = field(default_factory=list)
 
 class PipeCalculator:
     def __init__(self, df: pd.DataFrame): self.df = df
@@ -413,7 +412,7 @@ class Exporter:
     @staticmethod
     def to_excel(df):
         output = BytesIO()
-        export_df = df.drop(columns=['Löschen', 'id', 'Auswahl', 'project_id'], errors='ignore')
+        export_df = df.drop(columns=['Löschen', 'id', 'Auswahl', 'project_id', 'dn_clean'], errors='ignore')
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             export_df.to_excel(writer, index=False, sheet_name='Daten')
         return output.getvalue()
@@ -533,7 +532,7 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
     if 'saved_cuts' not in st.session_state: st.session_state.saved_cuts = []
     if 'next_cut_id' not in st.session_state: st.session_state.next_cut_id = 1
 
-    # Cleanup invalid cuts (old format)
+    # V9.6 FIX: Cleanup invalid cuts (old format without fittings field)
     if st.session_state.saved_cuts:
         try: _ = st.session_state.saved_cuts[0].fittings
         except AttributeError: st.session_state.saved_cuts = []
@@ -581,7 +580,6 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                         st.session_state.fitting_list.pop(i)
                         st.rerun()
                 
-                # Complex Spool Warning
                 if len(st.session_state.fitting_list) > 2:
                     st.warning("⚠️ Mehr als 2 Abzüge für ein Rohrstück? Bitte Spool in Einzelteile zerlegen!")
 
@@ -603,8 +601,9 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                 if st.button("💾 In Schnittliste speichern", type="primary", use_container_width=True):
                     if raw_len > 0:
                         final_name = cut_name if cut_name.strip() else f"Schnitt #{st.session_state.next_cut_id}"
+                        
                         # V9.6 FIX: Store fittings in the saved cut object!
-                        current_fittings_copy = list(st.session_state.fitting_list) # Copy list
+                        current_fittings_copy = list(st.session_state.fitting_list)
                         new_cut = SavedCut(st.session_state.next_cut_id, final_name, raw_len, final, f"{len(current_fittings_copy)} Teile", datetime.now().strftime("%H:%M"), current_fittings_copy)
                         
                         st.session_state.saved_cuts.append(new_cut)
@@ -654,14 +653,11 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                             
                             # 2. Anbauteile eintragen (Explosion)
                             for fit in cut.fittings:
-                                # Name aufräumen ("Bogen 90° (BA3) DN100" -> "Bogen 90°")
-                                # Wir nehmen den Fitting Namen, aber ohne DN Duplikat wenn möglich
                                 fit_name_clean = fit.name.split(" DN")[0]
-                                
                                 for _ in range(fit.count):
                                     DatabaseRepository.add_entry({
                                         "iso": cut.name, "naht": "", "datum": datetime.now().strftime("%d.%m.%Y"),
-                                        "dimension": f"DN {fit.dn}", "bauteil": fit_name_clean, "laenge": 0.0, # Stückgut hat Länge 0 im Buch
+                                        "dimension": f"DN {fit.dn}", "bauteil": fit_name_clean, "laenge": 0.0,
                                         "charge": "", "charge_apz": "", "schweisser": "", "project_id": active_pid
                                     })
                                     count_fits += 1
@@ -828,7 +824,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
 # --- V9.5 NEUER TAB: MTO (MATERIAL TAKE OFF) ---
 def render_mto_tab(active_pid: int, proj_name: str):
     st.subheader("📦 Material Manager (V9.5)")
-    st.markdown(f"<div class='project-tag'>📍 Projekt: {proj_name}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='project-tag'>📍 Projekt: {proj_name} (ID: {active_pid})</div>", unsafe_allow_html=True)
 
     # 1. Daten holen
     df_log = DatabaseRepository.get_logbook_by_project(active_pid)
@@ -854,22 +850,118 @@ def render_mto_tab(active_pid: int, proj_name: str):
         
         # Download
         fname = f"MTO_{proj_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.xlsx"
-        # Quick Excel Export for MTO
         output = BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             mto_df.to_excel(writer, index=False, sheet_name='Materialauszug')
         
         st.download_button("📥 MTO als Excel herunterladen", output.getvalue(), fname, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
         
-        # Tabelle
         st.dataframe(mto_df, use_container_width=True, hide_index=True)
         
-        # Chart (Visual Distribution)
-        # Group by Dimension (Pipe vs Fittings)
-        # Simplified View
         st.caption("Verteilung nach Dimensionen (Anzahl Positionen)")
         chart_data = mto_df['Dimension'].value_counts()
         st.bar_chart(chart_data)
+
+def render_logbook(df_pipe: pd.DataFrame):
+    # Retrieve project info FIRST to avoid NameError
+    proj_name = st.session_state.get('active_project_name', 'Unbekannt')
+    active_pid = st.session_state.get('active_project_id', 1)
+
+    st.subheader("📝 Digitales Rohrbuch (V9.6.2)")
+    st.markdown(f"<div class='project-tag'>📍 Projekt: {proj_name} (ID: {active_pid})</div>", unsafe_allow_html=True)
+
+    defaults = st.session_state.get('logbook_defaults', {})
+    def_iso = defaults.get('iso', '')
+    def_len = defaults.get('len', 0.0)
+    
+    with st.expander("Eintrag hinzufügen", expanded=True):
+        with st.form("lb_new"):
+            c1, c2, c3 = st.columns(3)
+            # Safe call because active_pid is now defined
+            iso_known = DatabaseRepository.get_known_values('iso', active_pid)
+            if iso_known:
+                iso_sel = c1.selectbox("ISO / Bez.", ["✨ Neu / Manuell"] + iso_known)
+                if iso_sel == "✨ Neu / Manuell":
+                    iso = c1.text_input("ISO manuell", value=def_iso, label_visibility="collapsed")
+                else:
+                    iso = iso_sel
+            else:
+                iso = c1.text_input("ISO / Bez.", value=def_iso)
+
+            naht = c2.text_input("Naht")
+            dat = c3.date_input("Datum")
+            
+            c4, c5, c6 = st.columns(3)
+            def_idx = 0 
+            if def_iso: def_idx = 5 
+            # V7.7.1 FIX: Added Nippel, Muffe at the end to keep index safe
+            bt = c4.selectbox("Bauteil", ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Stutzen", "Passstück", "Nippel", "Muffe"], index=def_idx)
+            dn = c5.selectbox("Dimension", df_pipe['DN'], index=8)
+            laenge_in = c6.number_input("Länge (mm)", value=float(def_len if def_len > 0 else 0.0)) 
+            
+            ch_known = DatabaseRepository.get_known_values('charge', active_pid)
+            if ch_known:
+                ch_sel = st.selectbox("Charge (Auswahl)", ["✨ Neu / Manuell"] + ch_known)
+                if ch_sel == "✨ Neu / Manuell":
+                    ch = st.text_input("Charge (Eingabe)", label_visibility="collapsed")
+                else:
+                    ch = ch_sel
+            else:
+                ch = st.text_input("Charge")
+
+            c7, c8 = st.columns(2)
+            apz_known = DatabaseRepository.get_known_values('charge_apz', active_pid)
+            with c7:
+                if apz_known:
+                    apz_sel = st.selectbox("APZ (Auswahl)", ["✨ Neu / Manuell"] + apz_known)
+                    if apz_sel == "✨ Neu / Manuell":
+                        apz = st.text_input("APZ (Eingabe)", label_visibility="collapsed")
+                    else:
+                        apz = apz_sel
+                else:
+                    apz = st.text_input("APZ / Zeugnis")
+
+            sch_known = DatabaseRepository.get_known_values('schweisser', active_pid)
+            with c8:
+                if sch_known:
+                    sch_sel = st.selectbox("Schweißer (Auswahl)", ["✨ Neu / Manuell"] + sch_known)
+                    if sch_sel == "✨ Neu / Manuell":
+                        sch = st.text_input("Schweißer (Eingabe)", label_visibility="collapsed")
+                    else:
+                        sch = sch_sel
+                else:
+                    sch = st.text_input("Schweißer")
+            
+            if st.form_submit_button("Speichern 💾", type="primary"):
+                DatabaseRepository.add_entry({
+                    "iso": iso, "naht": naht, "datum": dat.strftime("%d.%m.%Y"),
+                    "dimension": f"DN {dn}", "bauteil": bt, "laenge": laenge_in,
+                    "charge": ch, "charge_apz": apz, "schweisser": sch,
+                    "project_id": active_pid
+                })
+                if 'logbook_defaults' in st.session_state: del st.session_state['logbook_defaults']
+                st.success("Gespeichert")
+                st.rerun()
+
+    st.divider()
+    
+    df = DatabaseRepository.get_logbook_by_project(active_pid)
+    
+    if not df.empty:
+        ce1, ce2, _ = st.columns([1,1,3])
+        fname_base = f"Rohrbuch_{proj_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}"
+        ce1.download_button("📥 Excel", Exporter.to_excel(df), f"{fname_base}.xlsx")
+        if PDF_AVAILABLE: 
+            ce2.download_button("📄 PDF", Exporter.to_pdf_logbook(df, project_name=proj_name), f"{fname_base}.pdf")
+            
+        edited = st.data_editor(df, hide_index=True, use_container_width=True, column_config={"Löschen": st.column_config.CheckboxColumn(default=False)}, disabled=["id", "iso", "naht", "datum", "dimension", "bauteil", "charge", "charge_apz", "schweisser", "project_id"])
+        to_del = edited[edited['Löschen'] == True]
+        if not to_del.empty:
+            if st.button(f"🗑️ {len(to_del)} löschen", type="primary"):
+                DatabaseRepository.delete_entries(to_del['id'].tolist())
+                st.rerun()
+    else:
+        st.info(f"Keine Einträge für Projekt '{proj_name}' gefunden. Beginne mit der ersten Naht oder importiere aus der Säge.")
 
 def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
     row = calc.get_row(dn)
@@ -947,11 +1039,18 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
 # -----------------------------------------------------------------------------
 
 def main():
+    # Force Reset for V9.6.1 Update to prevent Class Mismatch
+    if 'v9_6_1_migration_done' not in st.session_state:
+        st.session_state.saved_cuts = []
+        st.session_state.fitting_list = []
+        st.session_state.v9_6_1_migration_done = True
+        # Silent rerun to clear state
+        st.rerun()
+
     DatabaseRepository.init_db()
     df_pipe = get_pipe_data()
     calc = PipeCalculator(df_pipe)
 
-    # 1. RENDER SIDEBAR (PROJECTS V7)
     render_sidebar_projects()
 
     with st.sidebar:
@@ -959,7 +1058,7 @@ def main():
         dn = st.selectbox("Nennweite", df_pipe['DN'], index=8)
         pn = st.radio("Druckstufe", ["PN 16", "PN 10"], horizontal=True)
 
-    # TABS: MTO hinzugefügt
+    # TABS: MTO (V9.5) ist der letzte Tab, ISO Tracker ist weg (V8.1)
     t1, t2, t3, t4, t5 = st.tabs(["🪚 Smarte Säge", "📐 Geometrie", "📝 Rohrbuch", "📦 Material", "📚 Smart Data"])
     
     with t1: render_smart_saw(calc, df_pipe, dn, pn)
