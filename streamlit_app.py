@@ -24,10 +24,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V7_7_1")
+logger = logging.getLogger("PipeCraft_Pro_V7_9")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 7.7.1",
+    page_title="Rohrbau Profi 7.9",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -234,6 +234,21 @@ class PipeCalculator:
         try: required_angle = math.degrees(math.acos(diag_base / travel)) if travel != 0 else 0
         except: required_angle = 0
         return {"travel": travel, "diag_base": diag_base, "angle_calc": required_angle}
+    
+    # SEGMENT BOGEN LOGIK (V7.8)
+    def calculate_segment_bend(self, dn: int, radius: float, num_segments: int, total_angle: float = 90.0) -> Dict[str, float]:
+        row = self.get_row(dn)
+        od = float(row['D_Aussen'])
+        if num_segments < 2: return {"error": "Min. 2 Segmente"}
+        miter_angle = total_angle / (2 * (num_segments - 1))
+        tan_alpha = math.tan(math.radians(miter_angle))
+        len_center = 2 * radius * tan_alpha
+        len_back = 2 * (radius + od/2) * tan_alpha
+        len_belly = 2 * (radius - od/2) * tan_alpha
+        end_back = (radius + od/2) * tan_alpha
+        end_belly = (radius - od/2) * tan_alpha
+        end_center = radius * tan_alpha
+        return {"miter_angle": miter_angle, "mid_back": len_back, "mid_belly": len_belly, "mid_center": len_center, "end_back": end_back, "end_belly": end_belly, "end_center": end_center, "od": od}
 
 class HandbookCalculator:
     BOLT_DATA = {"M12": [19, 85, 55], "M16": [24, 210, 135], "M20": [30, 410, 265], "M24": [36, 710, 460], "M27": [41, 1050, 680], "M30": [46, 1420, 920], "M33": [50, 1930, 1250], "M36": [55, 2480, 1600], "M39": [60, 3200, 2080], "M45": [70, 5000, 3250], "M52": [80, 7700, 5000]}
@@ -328,6 +343,28 @@ class Visualizer:
         ax.set_title(f"Verdrehung: {rotation_angle:.1f}°", va='bottom', fontsize=10, fontweight='bold')
         ax.text(math.radians(90), 1.2, "R", ha='center', fontweight='bold')
         ax.text(math.radians(270), 1.2, "L", ha='center', fontweight='bold')
+        return fig
+
+    @staticmethod
+    def plot_segment_schematic(mid_back: float, mid_belly: float, od: float, angle: float):
+        fig, ax = plt.subplots(figsize=(6, 3))
+        height = od
+        top_len = mid_back
+        bot_len = mid_belly
+        x_top = [-top_len/2, top_len/2]
+        x_bot = [-bot_len/2, bot_len/2]
+        y_top = [height/2, height/2]
+        y_bot = [-height/2, -height/2]
+        ax.plot(x_top, y_top, 'r-', linewidth=3, label='Rücken')
+        ax.plot(x_bot, y_bot, 'b-', linewidth=3, label='Bauch')
+        ax.plot([x_top[0], x_bot[0]], [y_top[0], y_bot[0]], 'k--', linewidth=1)
+        ax.plot([x_top[1], x_bot[1]], [y_top[1], y_bot[1]], 'k--', linewidth=1)
+        ax.annotate(f"{top_len:.1f}", xy=(0, height/2 + height*0.1), ha='center', color='red', fontweight='bold')
+        ax.annotate(f"{bot_len:.1f}", xy=(0, -height/2 - height*0.2), ha='center', color='blue', fontweight='bold')
+        ax.set_title(f"Mittelstück ({angle:.1f}° Schnitt)", fontsize=10)
+        ax.set_xlim(-top_len/2 - 50, top_len/2 + 50)
+        ax.set_ylim(-height, height)
+        ax.axis('off')
         return fig
 
 class Exporter:
@@ -565,9 +602,10 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                 st.rerun()
 
 def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
-    st.subheader("📐 Geometrie V7.7 (True 3D)")
+    st.subheader("📐 Geometrie V7.9 (Restored)")
     
-    geo_tabs = st.tabs(["2D Etage (S-Schlag)", "3D Raum-Etage (Rolling)", "Bogen", "Stutzen"])
+    # JETZT 5 TABS - BOGEN (STANDARD) IST ZURÜCK
+    geo_tabs = st.tabs(["2D Etage (S-Schlag)", "3D Raum-Etage (Rolling)", "Bogen (Standard)", "🦞 Segment-Bogen", "Stutzen"])
     
     # --- 1. 2D ETAGE ---
     with geo_tabs[0]:
@@ -595,21 +633,17 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                         st.session_state.transfer_cut_length = res['cut_length']
                         st.toast("Maß übertragen!", icon="📏")
                     
-                    # VISUAL 2D (RESTORED)
                     fig_2d = Visualizer.plot_2d_offset(res['run'], res['offset'])
                     st.pyplot(fig_2d, use_container_width=False)
 
     # --- 2. 3D RAUM ETAGE (ROLLING OFFSET) ---
     with geo_tabs[1]:
         st.info("💡 Berechnet eine Raum-Etage mit **Standard-Fittings**.")
-        
-        col_in, col_out, col_vis = st.columns([1, 1, 1.5]) # Mehr Platz für Visualisierung
-        
+        col_in, col_out, col_vis = st.columns([1, 1, 1.5]) 
         with col_in:
             st.markdown("**Eingabe**")
             dn_roll = st.selectbox("Nennweite", df['DN'], index=5, key="3d_dn")
             fit_angle = st.selectbox("Fitting Typ", [45, 60, 90], index=0, key="3d_ang")
-            
             set_val = st.number_input("Versprung Höhe (Set)", value=300.0, min_value=0.0, step=10.0)
             roll_val = st.number_input("Versprung Seite (Roll)", value=400.0, min_value=0.0, step=10.0)
             
@@ -634,9 +668,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
             st.caption(f"Einbaumaß (Mitte-Mitte): {travel_center:.1f} mm")
             st.metric("Baulänge (Run)", f"{run_length:.1f} mm", help="Platzbedarf in Längsrichtung")
             st.metric("Verdrehung", f"{rot_angle:.1f} °", "aus der Senkrechten")
-            
-            if cut_len < 0:
-                st.error("Nicht baubar! Fittings stoßen zusammen.")
+            if cut_len < 0: st.error("Nicht baubar! Fittings stoßen zusammen.")
             else:
                 if st.button("➡️ An Säge (3D)", key="btn_3d_saw"):
                     st.session_state.transfer_cut_length = cut_len
@@ -644,30 +676,64 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
 
         with col_vis:
             st.markdown("**3D Simulation**")
-            # VISUAL 3D ROOM (NEW V7.7)
             fig_3d = Visualizer.plot_rolling_offset_3d_room(roll_val, run_length, set_val)
             st.pyplot(fig_3d, use_container_width=False)
-            
             with st.expander("Verdrehung (Wasserwaage)"):
                 fig_gauge = Visualizer.plot_rotation_gauge(roll_val, set_val, rot_angle)
                 st.pyplot(fig_gauge, use_container_width=False)
 
-    # --- 3. BOGEN RECHNER ---
+    # --- 3. BOGEN RECHNER (RESTORED) ---
     with geo_tabs[2]:
+        st.markdown("#### Standard Bogen-Rechner")
         cb1, cb2 = st.columns(2)
-        angle = cb1.slider("Winkel", 0, 90, 45, key="gb_ang")
-        dn_b = cb2.selectbox("DN", df['DN'], index=6, key="gb_dn")
+        angle = cb1.slider("Winkel", 0, 90, 45, key="gb_ang_std")
+        dn_b = cb2.selectbox("DN", df['DN'], index=6, key="gb_dn_std")
         details = calc.calculate_bend_details(dn_b, angle)
+        
         c_v, c_l = st.columns([1, 2])
-        with c_v: st.metric("Vorbau", f"{details['vorbau']:.1f} mm")
+        with c_v: st.metric("Vorbau (Z-Maß)", f"{details['vorbau']:.1f} mm")
         with c_l:
             cm1, cm2, cm3 = st.columns(3)
             cm1.metric("Rücken", f"{details['bogen_aussen']:.1f}")
             cm2.metric("Mitte", f"{details['bogen_mitte']:.1f}") 
             cm3.metric("Bauch", f"{details['bogen_innen']:.1f}")
 
-    # --- 4. STUTZEN ---
+    # --- 4. SEGMENT BOGEN (LOBSTER) ---
     with geo_tabs[3]:
+        st.info("🦞 Berechnung für Segmentbögen (Lobster Back) ohne Standard-Fittings.")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            dn_seg = st.selectbox("Nennweite", df['DN'], index=8, key="seg_dn")
+            radius_seg = st.number_input("Radius (R) [mm]", value=1000.0, step=10.0)
+        with c2:
+            num_seg = st.number_input("Anzahl Segmente (Ganze)", value=3, min_value=2, step=1)
+            total_ang = st.number_input("Gesamtwinkel", value=90.0, step=5.0)
+        with c3:
+            if st.button("Berechnen 🦞", type="primary"):
+                res = calc.calculate_segment_bend(dn_seg, radius_seg, num_seg, total_ang)
+                st.session_state.calc_res_seg = res
+        
+        if 'calc_res_seg' in st.session_state:
+            res = st.session_state.calc_res_seg
+            if "error" in res:
+                st.error(res["error"])
+            else:
+                st.divider()
+                c_res1, c_res2 = st.columns([1, 1])
+                with c_res1:
+                    st.markdown("#### Mittelstück (Ganz)")
+                    st.metric("Rücken (L_aussen)", f"{res['mid_back']:.1f} mm")
+                    st.metric("Bauch (L_innen)", f"{res['mid_belly']:.1f} mm")
+                    st.caption(f"Schnittwinkel: {res['miter_angle']:.2f}°")
+                with c_res2:
+                    st.markdown("#### Endstück (Halb)")
+                    st.metric("Rücken bis Schnitt", f"{res['end_back']:.1f} mm")
+                    st.metric("Bauch bis Schnitt", f"{res['end_belly']:.1f} mm")
+                fig_seg = Visualizer.plot_segment_schematic(res['mid_back'], res['mid_belly'], res['od'], res['miter_angle'])
+                st.pyplot(fig_seg, use_container_width=False)
+
+    # --- 5. STUTZEN ---
+    with geo_tabs[4]:
         c1, c2 = st.columns(2)
         dn_stub = c1.selectbox("DN Stutzen", df['DN'], index=5, key="gs_dn1")
         dn_main = c2.selectbox("DN Hauptrohr", df['DN'], index=8, key="gs_dn2")
@@ -681,7 +747,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
             except ValueError as e: st.error(str(e))
 
 def render_logbook(df_pipe: pd.DataFrame):
-    st.subheader("📝 Digitales Rohrbuch (V7.4)")
+    st.subheader("📝 Digitales Rohrbuch (V7.7.1)")
     
     proj_name = st.session_state.get('active_project_name', 'Unbekannt')
     active_pid = st.session_state.get('active_project_id', 1)
@@ -710,7 +776,6 @@ def render_logbook(df_pipe: pd.DataFrame):
             c4, c5, c6 = st.columns(3)
             def_idx = 0 
             if def_iso: def_idx = 5 
-            # V7.7.1 FIX: Added Nippel, Muffe at the end to keep index safe
             bt = c4.selectbox("Bauteil", ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Stutzen", "Passstück", "Nippel", "Muffe"], index=def_idx)
             dn = c5.selectbox("Dimension", df_pipe['DN'], index=8)
             laenge_in = c6.number_input("Länge (mm)", value=float(def_len if def_len > 0 else 0.0)) 
