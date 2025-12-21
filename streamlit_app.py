@@ -10,7 +10,7 @@ from typing import List, Tuple, Optional, Dict
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-import numpy as np # Wird für die Flächen benötigt
+import numpy as np 
 
 # FPDF optional laden
 try:
@@ -24,10 +24,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V7_7")
+logger = logging.getLogger("PipeCraft_Pro_V7_7_1")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 7.7",
+    page_title="Rohrbau Profi 7.7.1",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -96,7 +96,6 @@ class DatabaseRepository:
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         name TEXT NOT NULL UNIQUE,
                         created_at TEXT)''')
-            
             c.execute("PRAGMA table_info(rohrbuch)")
             cols = [info[1] for info in c.fetchall()]
             if 'charge_apz' not in cols:
@@ -292,60 +291,27 @@ class Visualizer:
 
     @staticmethod
     def plot_rolling_offset_3d_room(roll: float, run: float, set_val: float):
-        """
-        True 3D Representation of the Rolling Offset in a 'Room' context.
-        """
         fig = plt.figure(figsize=(7, 6))
         ax = fig.add_subplot(111, projection='3d')
-        
-        # 1. Coordinate Definition
-        # Start Point (Incoming pipe end)
         P0 = np.array([0, 0, 0])
-        # End Point (Outgoing pipe start)
         P1 = np.array([roll, run, set_val])
-        
-        # 2. Draw Floor & Walls (Reference Planes)
-        # Max dimension to scale the room
         max_dim = max(abs(roll), abs(run), abs(set_val), 100)
-        
-        # Floor (z=0)
         xx, yy = np.meshgrid(np.linspace(-max_dim*0.2, roll*1.2, 2), np.linspace(-max_dim*0.2, run*1.2, 2))
         zz = np.zeros_like(xx)
         ax.plot_surface(xx, yy, zz, color='gray', alpha=0.1)
-        
-        # 3. Draw The Pipe System
-        # Incoming Pipe (Grey stub from negative Y)
         ax.plot([0, 0], [-run*0.3, 0], [0, 0], color='gray', linewidth=4, alpha=0.6)
-        
-        # The TRAVEL Pipe (Red, P0 to P1)
         ax.plot([P0[0], P1[0]], [P0[1], P1[1]], [P0[2], P1[2]], color='#dc2626', linewidth=5, label='Passstück')
-        
-        # Outgoing Pipe (Grey stub to positive Y)
         ax.plot([P1[0], P1[0]], [P1[1], P1[1]+run*0.3], [P1[2], P1[2]], color='gray', linewidth=4, alpha=0.6)
-        
-        # 4. Fittings (Nodes) as Dots
         ax.scatter([P0[0], P1[0]], [P0[1], P1[1]], [P0[2], P1[2]], color='#1e3a8a', s=100, label='Naht/Flansch')
-        
-        # 5. Dimension Lines (Projections)
-        # Drop line to floor (Height/Set)
         ax.plot([P1[0], P1[0]], [P1[1], P1[1]], [0, P1[2]], 'b--', linewidth=1, label='Höhe (Set)')
-        # Line on floor (Roll) - from Y-axis projection to Point projection
-        # Projection of P1 on floor is (roll, run, 0)
-        # Projection on "straight" line would be (0, run, 0)
         ax.plot([0, P1[0]], [P1[1], P1[1]], [0, 0], 'g--', linewidth=1, label='Seite (Roll)')
-        
-        # 6. Labels & View
         ax.set_xlabel('Seite (Roll)')
         ax.set_ylabel('Länge (Run)')
         ax.set_zlabel('Höhe (Set)')
-        
-        # Force aspect ratio to be cubic/equal
-        # Matplotlib 3.3+ supports this
         try:
             ax.set_box_aspect([roll if roll>10 else 100, run if run>10 else 100, set_val if set_val>10 else 100])
         except:
-            pass # Fallback for older versions
-            
+            pass
         ax.legend(loc='upper left', fontsize='small')
         return fig
 
@@ -744,7 +710,8 @@ def render_logbook(df_pipe: pd.DataFrame):
             c4, c5, c6 = st.columns(3)
             def_idx = 0 
             if def_iso: def_idx = 5 
-            bt = c4.selectbox("Bauteil", ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Stutzen", "Passstück"], index=def_idx)
+            # V7.7.1 FIX: Added Nippel, Muffe at the end to keep index safe
+            bt = c4.selectbox("Bauteil", ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Stutzen", "Passstück", "Nippel", "Muffe"], index=def_idx)
             dn = c5.selectbox("Dimension", df_pipe['DN'], index=8)
             laenge_in = c6.number_input("Länge (mm)", value=float(def_len if def_len > 0 else 0.0)) 
             
