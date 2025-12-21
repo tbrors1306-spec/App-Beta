@@ -25,10 +25,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V10_3")
+logger = logging.getLogger("PipeCraft_Pro_V10_4")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 10.3",
+    page_title="Rohrbau Profi 10.4",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -171,7 +171,6 @@ class DatabaseRepository:
                 df = pd.DataFrame(columns=["id", "iso", "naht", "datum", "dimension", "bauteil", "laenge", "charge", "charge_apz", "schweisser", "project_id", "✏️", "Löschen"])
             return df
 
-    # V10.3: Robust Update Full Entry Function
     @staticmethod
     def update_full_entry(entry_id: int, data: dict):
         with sqlite3.connect(DB_NAME) as conn:
@@ -485,21 +484,26 @@ class Exporter:
         pdf.ln(5)
         
         # Group by APZ
+        # Clean up APZ column
         df_log['charge_apz'] = df_log['charge_apz'].fillna('OHNE NACHWEIS').replace('', 'OHNE NACHWEIS')
         groups = df_log.groupby('charge_apz')
         
         pdf.set_font("Arial", size=10)
         
         for apz, group in groups:
+            # Header per APZ
             pdf.set_fill_color(230, 230, 230)
             pdf.set_font("Arial", 'B', 10)
             pdf.cell(0, 8, f"Charge / APZ: {apz}", 1, 1, 'L', fill=True)
             
+            # Items
             pdf.set_font("Arial", size=9)
+            # Aggregate group items for cleaner list: "3x Bogen DN100" instead of 3 lines
             agg = group.groupby(['dimension', 'bauteil']).size().reset_index(name='count')
             
             for _, row in agg.iterrows():
                 txt = f"   {row['count']}x {row['bauteil']} {row['dimension']}"
+                # Get example ISOs
                 isos = group[(group['dimension']==row['dimension']) & (group['bauteil']==row['bauteil'])]['iso'].unique()
                 iso_txt = ", ".join(isos[:3])
                 if len(isos) > 3: iso_txt += "..."
@@ -585,6 +589,7 @@ def render_sidebar_projects():
             st.session_state.active_project_name = "Kein Projekt"
             st.session_state.project_archived = 0
 
+    # FIX: Check if attribute exists, if not set default
     if 'project_archived' not in st.session_state:
         st.session_state.project_archived = 0 
 
@@ -938,12 +943,16 @@ def render_logbook(df_pipe: pd.DataFrame):
     active_pid = st.session_state.get('active_project_id', 1)
     is_archived = st.session_state.get('project_archived', 0)
 
-    st.subheader("📝 Digitales Rohrbuch (V10.3 Stable Form)")
+    st.subheader("📝 Digitales Rohrbuch")
     if is_archived:
         st.markdown(f"<div class='project-tag'>📍 {proj_name} <span class='archived-tag'>ARCHIVIERT</span></div>", unsafe_allow_html=True)
     else:
         st.markdown(f"<div class='project-tag'>📍 Projekt: {proj_name} (ID: {active_pid})</div>", unsafe_allow_html=True)
 
+    defaults = st.session_state.get('logbook_defaults', {})
+    def_iso = defaults.get('iso', '')
+    def_len = defaults.get('len', 0.0)
+    
     # 1. State Management für Editierung
     if 'editing_id' not in st.session_state:
         st.session_state.editing_id = None
@@ -1078,10 +1087,10 @@ def render_logbook(df_pipe: pd.DataFrame):
                 st.session_state.form_schweisser = row['schweisser'] if row['schweisser'] else ""
                 st.session_state.form_len = float(row['laenge']) if row['laenge'] else 0.0
                 
-                # Parse Dimension Index
+                # Parse Dimension Index (Bugfix V10.4 logic included)
                 try: 
                     dn_int = int(re.search(r'\d+', str(row['dimension'])).group())
-                    st.session_state.form_dn_idx = df_pipe[df_pipe['DN'] == dn_int].index[0]
+                    st.session_state.form_dn_idx = int(df_pipe[df_pipe['DN'] == dn_int].index[0])
                 except: st.session_state.form_dn_idx = 8
                 
                 # Parse Bauteil Index
