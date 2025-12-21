@@ -21,10 +21,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V7_2")
+logger = logging.getLogger("PipeCraft_Pro_V7_3")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 7.2",
+    page_title="Rohrbau Profi 7.3",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -35,7 +35,6 @@ st.markdown("""
     .main { background-color: #f8f9fa; }
     h1, h2, h3 { color: #1e293b; font-family: 'Segoe UI', sans-serif; }
     
-    /* Project Badge */
     .project-tag {
         background-color: #0ea5e9; color: white;
         padding: 6px 12px; border-radius: 20px;
@@ -83,14 +82,13 @@ def get_pipe_data() -> pd.DataFrame:
 DB_NAME = "rohrbau_profi.db"
 
 class DatabaseRepository:
-    """Verwaltet Datenbankoperationen (V7.2: Repair Edition)."""
+    """Verwaltet Datenbankoperationen (V7.3: STABLE Fixes)."""
     
     @staticmethod
     def init_db():
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
             
-            # 1. Tabellen erstellen
             c.execute('''CREATE TABLE IF NOT EXISTS rohrbuch (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, 
                         iso TEXT, naht TEXT, datum TEXT, 
@@ -103,7 +101,7 @@ class DatabaseRepository:
                         name TEXT NOT NULL UNIQUE,
                         created_at TEXT)''')
             
-            # 2. Migration: Fehlende Spalten ergänzen
+            # Migration
             c.execute("PRAGMA table_info(rohrbuch)")
             cols = [info[1] for info in c.fetchall()]
             
@@ -114,15 +112,12 @@ class DatabaseRepository:
                 try: c.execute("ALTER TABLE rohrbuch ADD COLUMN project_id INTEGER")
                 except: pass
             
-            # 3. REPAIR LOGIC V7.2:
-            # Stelle sicher, dass Projekt ID 1 existiert (auch wenn Projekte gelöscht wurden)
+            # Ensure Project 1 exists
             c.execute("INSERT OR IGNORE INTO projects (id, name, created_at) VALUES (1, 'Standard Baustelle', ?)", 
                       (datetime.now().strftime("%d.%m.%Y"),))
             
-            # HEALING: Alle Einträge OHNE Projekt-ID werden Projekt 1 zugewiesen
-            # Das ist der Fix für "verschwundene" Daten nach dem Update
+            # Healing: Map orphans to Project 1
             c.execute("UPDATE rohrbuch SET project_id = 1 WHERE project_id IS NULL")
-            
             conn.commit()
 
     @staticmethod
@@ -142,21 +137,21 @@ class DatabaseRepository:
 
     @staticmethod
     def add_entry(data: dict):
+        # FIX V7.3: Use consistent NAMED placeholders
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
-            # Safety: Ensure project_id is int
-            pid = data.get('project_id')
-            if pid is None: pid = 1
-            
+            # Ensure project_id is set
+            if 'project_id' not in data or data['project_id'] is None:
+                data['project_id'] = 1
+                
             c.execute('''INSERT INTO rohrbuch 
                          (iso, naht, datum, dimension, bauteil, laenge, charge, charge_apz, schweisser, project_id) 
-                         VALUES (:iso, :naht, :datum, :dimension, :bauteil, :laenge, :charge, :charge_apz, :schweisser, ?)''', 
-                         dict(data, project_id=pid)) # Override pid for safety
+                         VALUES (:iso, :naht, :datum, :dimension, :bauteil, :laenge, :charge, :charge_apz, :schweisser, :project_id)''', 
+                         data)
             conn.commit()
 
     @staticmethod
     def get_logbook_by_project(project_id: int) -> pd.DataFrame:
-        """Filtert das Rohrbuch strikt nach Projekt-ID."""
         with sqlite3.connect(DB_NAME) as conn:
             df = pd.read_sql_query("SELECT * FROM rohrbuch WHERE project_id = ? ORDER BY id DESC", conn, params=(project_id,))
             if not df.empty: df['Löschen'] = False 
@@ -407,15 +402,23 @@ class Exporter:
 # -----------------------------------------------------------------------------
 
 def render_sidebar_projects():
-    """V7.0: Projekt Manager in Sidebar"""
+    """V7.3: Sidebar Project Selection (Stabilized)"""
     st.sidebar.title("🏗️ Projekt")
     projects = DatabaseRepository.get_projects() 
     
+    # 1. State Handling: Ensure active_project_id exists
     if 'active_project_id' not in st.session_state:
         if projects:
             st.session_state.active_project_id = projects[0][0]
             st.session_state.active_project_name = projects[0][1]
     
+    # 2. Re-Validate State: Check if stored ID still exists in DB (deleted?)
+    current_ids = [p[0] for p in projects]
+    if st.session_state.active_project_id not in current_ids and projects:
+        st.session_state.active_project_id = projects[0][0]
+        st.session_state.active_project_name = projects[0][1]
+
+    # 3. Find Index for Selectbox
     project_names = [p[1] for p in projects]
     current_idx = 0
     for i, p in enumerate(projects):
@@ -426,6 +429,7 @@ def render_sidebar_projects():
     selected_name = st.sidebar.selectbox("Aktive Baustelle:", project_names, index=current_idx)
     new_id = [p[0] for p in projects if p[1] == selected_name][0]
     
+    # 4. Logic: Switch Project
     if new_id != st.session_state.active_project_id:
         st.session_state.active_project_id = new_id
         st.session_state.active_project_name = selected_name
@@ -556,7 +560,6 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
 
             st.divider()
             ce1, ce2 = st.columns(2)
-            # V7.1 Export mit Filename
             fname_base = f"Saege_{proj_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}"
             excel_data = Exporter.to_excel(df_s)
             ce1.download_button("📥 Excel", excel_data, f"{fname_base}.xlsx", use_container_width=True)
@@ -645,7 +648,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
             except ValueError as e: st.error(str(e))
 
 def render_logbook(df_pipe: pd.DataFrame):
-    st.subheader("📝 Digitales Rohrbuch (V7.2)")
+    st.subheader("📝 Digitales Rohrbuch (V7.3)")
     
     proj_name = st.session_state.get('active_project_name', 'Unbekannt')
     active_pid = st.session_state.get('active_project_id', 1)
@@ -685,7 +688,6 @@ def render_logbook(df_pipe: pd.DataFrame):
 
     st.divider()
     
-    # LOAD FILTERED DATA
     df = DatabaseRepository.get_logbook_by_project(active_pid)
     
     if not df.empty:
@@ -702,7 +704,7 @@ def render_logbook(df_pipe: pd.DataFrame):
                 DatabaseRepository.delete_entries(to_del['id'].tolist())
                 st.rerun()
     else:
-        st.info(f"Keine Einträge für Projekt '{proj_name}' gefunden. Beginne mit der ersten Naht oder importiere aus der Säge.")
+        st.info(f"Keine Einträge für Projekt '{proj_name}' gefunden.")
 
 def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
     row = calc.get_row(dn)
@@ -724,9 +726,9 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
         with c_in2:
             w_data = HandbookCalculator.calculate_weight(od, wt_input, len_input * 1000)
             mc1, mc2, mc3 = st.columns(3)
-            mc1.metric("Leergewicht (Stahl)", f"{w_data['total_steel']:.1f} kg", f"{w_data['kg_per_m_steel']:.1f} kg/m")
-            mc2.metric("Gewicht Gefüllt", f"{w_data['total_filled']:.1f} kg", "für Hydrotest")
-            mc3.metric("Füllvolumen", f"{w_data['volume_l']:.0f} Liter", "Wasserbedarf")
+            mc1.metric("Leergewicht", f"{w_data['total_steel']:.1f} kg", f"{w_data['kg_per_m_steel']:.1f} kg/m")
+            mc2.metric("Gefüllt", f"{w_data['total_filled']:.1f} kg", "Hydrotest")
+            mc3.metric("Volumen", f"{w_data['volume_l']:.0f} L")
 
     c_geo1, c_geo2 = st.columns(2)
     with c_geo1:
