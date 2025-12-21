@@ -60,6 +60,11 @@ st.markdown("""
         border-left: 4px solid #3b82f6;
         margin-bottom: 10px;
     }
+    
+    /* Tabellen Header etwas schicker */
+    thead tr th {
+        background-color: #f1f5f9 !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -70,7 +75,7 @@ st.markdown("""
 @st.cache_data
 def get_pipe_data() -> pd.DataFrame:
     """
-    Lädt die statischen Rohdaten. Caching verbessert die Performance beim Neuladen.
+    Lädt die statischen Rohdaten. Caching verbessert die Performance.
     """
     raw_data = {
         'DN':            [25, 32, 40, 50, 65, 80, 100, 125, 150, 200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000, 1200, 1400, 1600],
@@ -136,12 +141,12 @@ class DatabaseRepository:
             conn.commit()
 
 # -----------------------------------------------------------------------------
-# 3. LOGIK-SCHICHT (CALCULATION LOGIC)
+# 3. LOGIK-SCHICHT (CALCULATION LOGIC & MODELS)
 # -----------------------------------------------------------------------------
 
 @dataclass
 class FittingItem:
-    """Datenmodell für ein Bauteil in der Zuschnittsliste."""
+    """Datenmodell für ein Bauteil in der aktuellen Kalkulation."""
     name: str
     count: int
     deduction_single: float
@@ -150,6 +155,17 @@ class FittingItem:
     @property
     def total_deduction(self) -> float:
         return self.deduction_single * self.count
+
+@dataclass
+class CutListEntry:
+    """Datenmodell für einen gespeicherten Schnitt in der Liste."""
+    id: int
+    iso_ref: str        # Referenz zur Zeichnung
+    spool_nr: str       # Nummer des Teilstücks
+    raw_length: float   # Isomaß
+    cut_length: float   # Fertiges Sägelänge
+    details: str        # Info über Abzüge (z.B. "2x Bogen, 1x Dichtung")
+    timestamp: str
 
 class PipeCalculator:
     """Enthält die reine Berechnungslogik, getrennt von der UI."""
@@ -208,9 +224,6 @@ class PipeCalculator:
 
         # DataFrame für Tabelle (grobere Schritte)
         table_data = []
-        for angle in range(0, 181, 45): # 0, 45, 90, 135, 180 (Symmetrie reicht oft)
-             if angle == 0: steps = [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 180] # User bat um detaillierte Tabelle
-        
         for angle in [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 180]:
             t_val = r_main - math.sqrt(r_main**2 - (r_stub * math.sin(math.radians(angle)))**2)
             u_val = (r_stub * 2 * math.pi) * (angle / 360)
@@ -293,100 +306,171 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
         st.write(f"**Schraubenlänge (F-L):** {row[f'L_Los{suffix}']} mm")
 
 def render_tab_workshop(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn: str):
-    st.markdown("## Werkstatt-Tools")
+    """
+    Rendert den Werkstatt-Tab mit der neuen V2.0 Sägeliste.
+    """
+    st.markdown("## 📐 Werkstatt & Sägeliste V2.0")
     
+    # Initialisiere Session State für die persistente Liste, falls noch nicht vorhanden
+    if 'cut_list_storage' not in st.session_state:
+        st.session_state.cut_list_storage = []
+    if 'next_id' not in st.session_state:
+        st.session_state.next_id = 1
+
     tab_saw, tab_bend, tab_branch = st.tabs(["🪚 Smart Sägeliste", "🔄 Bogen Details", "🔥 Stutzen"])
     
-    # --- SUB-TAB: SÄGELISTE ---
+    # --- SUB-TAB: SMART SÄGELISTE (NEU V2.0) ---
     with tab_saw:
-        col_input, col_list = st.columns([1, 2])
+        # Split-View: Links Kalkulation, Rechts Liste
+        col_calc, col_storage = st.columns([1.2, 1.8])
         
-        with col_input:
-            st.markdown("### 1. Eingabe")
-            with st.form("add_fitting_form", clear_on_submit=True):
-                iso_mass = st.number_input("Isometrie-Maß (mm)", min_value=0.0, step=10.0, value=st.session_state.get('iso_mass_store', 1000.0), key="iso_input")
-                spalt = st.number_input("Wurzelspalt (mm)", min_value=0.0, value=3.0, step=0.5)
-                
-                st.markdown("---")
-                f_type = st.selectbox("Bauteil", ["Bogen 90° (BA3)", "Bogen (Zuschnitt)", "Flansch (Vorschweiß)", "T-Stück", "Reduzierung (konz.)"])
-                
-                # Dynamische Inputs
-                c_dn1, c_dn2 = st.columns(2)
-                f_dn = c_dn1.selectbox("DN", df['DN'], index=df['DN'].tolist().index(current_dn))
-                
-                f_angle = 90.0
-                if "Zuschnitt" in f_type:
-                    f_angle = c_dn2.number_input("Winkel °", value=45.0)
-                elif "Reduzierung" in f_type:
-                    c_dn2.selectbox("DN Klein", df['DN']) # Nur Visualisierung im Dropdown, Logik nimmt DN Groß
-                
-                f_count = st.number_input("Anzahl", min_value=1, value=1)
-                
-                add_btn = st.form_submit_button("Hinzufügen ➕", type="primary")
-                
-                if add_btn:
-                    # Input in Session Store speichern für UX
-                    st.session_state.iso_mass_store = iso_mass
-                    
-                    deduction = calc.get_deduction(f_type, f_dn, "_16" if pn == "PN 16" else "_10", f_angle)
-                    item_name = f"{f_type} DN{f_dn}"
-                    if "Zuschnitt" in f_type: item_name += f" ({f_angle}°)"
-                    
-                    new_item = FittingItem(item_name, f_count, deduction, f_dn)
-                    st.session_state.fitting_list.append(new_item)
-                    st.rerun()
-
-        with col_list:
-            st.markdown("### 2. Zuschnitts-Berechnung")
+        with col_calc:
+            st.markdown("### 1. Kalkulation (Aktuelles Spool)")
             
-            if not st.session_state.fitting_list:
-                st.info("Noch keine Bauteile hinzugefügt.")
+            # A) Metadaten (Kontext)
+            with st.container(): 
+                c_meta1, c_meta2 = st.columns(2)
+                iso_ref = c_meta1.text_input("ISO / Projekt", key="meta_iso", placeholder="z.B. L-1004")
+                spool_nr = c_meta2.text_input("Spool Nr.", key="meta_spool", placeholder="01")
+
+            st.divider()
+
+            # B) Maßeingabe
+            iso_mass = st.number_input("Gesamtmaß (Isometrie) [mm]", min_value=0.0, step=10.0, format="%.1f", key="input_iso_mass")
+            
+            # C) Abzüge definieren (Dichtungen & Formteile)
+            with st.expander("🛠️ Bauteile & Abzüge", expanded=True):
+                # 1. Dichtungen & Spalte (NEU)
+                st.caption("Dichtungen & Spalte")
+                c_gap1, c_gap2, c_gap3 = st.columns(3)
+                gap_weld = c_gap1.number_input("Wurzelspalt (mm)", value=3.0, step=0.5)
+                gasket_count = c_gap2.number_input("Anz. Dichtungen", value=0, min_value=0, max_value=2, help="0=Keine, 1=Einseitig, 2=Beidseitig")
+                gasket_thk = c_gap3.number_input("Dicke (mm)", value=2.0, min_value=0.0, step=0.5, disabled=(gasket_count==0))
+                
+                # 2. Formteile hinzufügen
+                st.caption("Formteile hinzufügen")
+                with st.form("add_fitting_v2", clear_on_submit=True):
+                    f_type = st.selectbox("Typ", ["Bogen 90° (BA3)", "Bogen (Zuschnitt)", "Flansch (Vorschweiß)", "T-Stück", "Reduzierung (konz.)"])
+                    c_f1, c_f2 = st.columns(2)
+                    f_dn = c_f1.selectbox("DN", df['DN'], index=df['DN'].tolist().index(current_dn))
+                    f_angle = 90.0
+                    if "Zuschnitt" in f_type:
+                        f_angle = c_f2.number_input("Winkel", value=45.0)
+                    else:
+                        c_f2.text("Standard")
+                    
+                    f_count = st.number_input("Anzahl", 1, 10, 1)
+                    if st.form_submit_button("Bauteil hinzufügen ➕"):
+                        deduction = calc.get_deduction(f_type, f_dn, "_16" if pn == "PN 16" else "_10", f_angle)
+                        item_name = f"{f_type} DN{f_dn}"
+                        if "Zuschnitt" in f_type: item_name += f" ({f_angle}°)"
+                        st.session_state.fitting_list.append(FittingItem(item_name, f_count, deduction, f_dn))
+                        st.rerun()
+
+            # D) Live-Berechnung des aktuellen Stücks
+            # Summe Formteile
+            sum_fittings = sum([i.total_deduction for i in st.session_state.fitting_list])
+            count_fittings = sum([i.count for i in st.session_state.fitting_list])
+            
+            # Summe Spalte (Annahme: 1 Naht pro Bauteil + 1)
+            # Hier vereinfacht: User gibt Spalt vor, wir multiplizieren mit Anzahl Bauteile. 
+            # In der Praxis oft: (Anzahl Bauteile) * Spalt.
+            sum_welds = count_fittings * gap_weld
+            
+            # Summe Dichtungen
+            sum_gaskets = gasket_count * gasket_thk
+            
+            total_deduction = sum_fittings + sum_welds + sum_gaskets
+            final_cut = iso_mass - total_deduction
+
+            # Anzeige Ergebnis
+            if final_cut < 0:
+                st.error(f"Negativmaß! Abzüge ({total_deduction}) > Iso ({iso_mass})")
             else:
-                # Tabelle der Bauteile
-                data_rows = []
-                total_deduct = 0.0
-                total_count = 0
+                st.markdown(f"<div class='success-box' style='text-align:center'>Sägelänge<br><span style='font-size:1.8em'>{final_cut:.1f} mm</span></div>", unsafe_allow_html=True)
                 
-                for idx, item in enumerate(st.session_state.fitting_list):
-                    sub = item.total_deduction
-                    data_rows.append({
-                        "Bauteil": item.name,
-                        "Anzahl": item.count,
-                        "Abzug (Einzel)": f"{item.deduction_single:.1f}",
-                        "Abzug (Gesamt)": f"{sub:.1f}"
-                    })
-                    total_deduct += sub
-                    total_count += item.count
+                # Detail-Info string bauen
+                details_str = f"Teile: -{sum_fittings:.1f} | Spalte: -{sum_welds:.1f} | Dichtungen: -{sum_gaskets:.1f}"
+                st.caption(details_str)
                 
-                st.dataframe(pd.DataFrame(data_rows), use_container_width=True, hide_index=True)
+                # E) Buttons: Reset & Speichern
+                btn_col1, btn_col2 = st.columns(2)
                 
-                # Löschen Button
-                col_act1, col_act2 = st.columns(2)
-                if col_act1.button("Letztes löschen ↩️"):
-                    st.session_state.fitting_list.pop()
-                    st.rerun()
-                if col_act2.button("Alles Reset 🗑️"):
+                if btn_col1.button("Reset Bauteile 🗑️"):
                     st.session_state.fitting_list = []
                     st.rerun()
+                
+                # Zur Liste hinzufügen
+                if btn_col2.button("💾 In Liste speichern", type="primary"):
+                    if iso_mass > 0:
+                        new_entry = CutListEntry(
+                            id=st.session_state.next_id,
+                            iso_ref=iso_ref if iso_ref else "-",
+                            spool_nr=spool_nr if spool_nr else f"#{st.session_state.next_id}",
+                            raw_length=iso_mass,
+                            cut_length=final_cut,
+                            details=f"{count_fittings} Teile, {gasket_count} Dicht.",
+                            timestamp=datetime.now().strftime("%H:%M")
+                        )
+                        st.session_state.cut_list_storage.append(new_entry)
+                        st.session_state.next_id += 1
+                        st.success("Gespeichert!")
+                        st.rerun()
+                    else:
+                        st.warning("Bitte Isomaß eingeben.")
 
-                # Ergebnisrechnung
-                st.divider()
-                # Iso Maß aus dem State holen (falls Formular re-run)
-                iso_val = st.session_state.get('iso_input', 1000.0)
+        with col_storage:
+            st.markdown("### 📋 Gespeicherte Schnitte")
+            
+            if not st.session_state.cut_list_storage:
+                st.info("Noch keine Schnitte gespeichert.")
+            else:
+                # Liste als DataFrame aufbereiten
+                data = [{
+                    "ID": e.id,
+                    "ISO": e.iso_ref,
+                    "Spool": e.spool_nr,
+                    "Iso-Maß": e.raw_length,
+                    "Säge-Maß": e.cut_length,
+                    "Info": e.details
+                } for e in st.session_state.cut_list_storage]
                 
-                # Spalte abziehen (Anzahl Schweißnähte = Anzahl Bauteile)
-                # Annahme: 1 Bauteil = 1 Naht im Strang, oder user gibt explizit ein. 
-                # Hier simple Logik: Summe Bauteile * Spalt.
-                spalt_deduct = total_count * st.session_state.get('iso_input_spalt', 3.0) 
-                # Hinweis: Zugriff auf form widget key ausserhalb form ist tricky, daher nehmen wir spalt von oben wenn möglich, 
-                # oder vereinfachen: Wir berechnen es basierend auf den Item counts.
-                # Da wir spalt nicht im fitting item speichern, nehmen wir einfach an der User ändert es nicht ständig.
-                # Besser: Spalt global speichern. Hier vereinfacht:
+                df_cuts = pd.DataFrame(data)
                 
-                final_len = iso_val - total_deduct - (total_count * 3.0) # Default 3mm wenn nicht anders
+                # Tabelle anzeigen
+                st.dataframe(
+                    df_cuts, 
+                    use_container_width=True, 
+                    hide_index=True,
+                    column_config={
+                        "Säge-Maß": st.column_config.NumberColumn(
+                            "Säge-Maß (mm)",
+                            format="%.1f mm",
+                        )
+                    }
+                )
                 
-                st.markdown(f"<div class='success-box'>Sägelänge: {final_len:.1f} mm</div>", unsafe_allow_html=True)
-                st.caption(f"Rechnung: {iso_val} (Iso) - {total_deduct:.1f} (Bauteile) - {total_count*3.0} (Spalte @ 3mm)")
+                # Aktionen für die Liste
+                act_c1, act_c2 = st.columns(2)
+                
+                if act_c1.button("Letzten Eintrag löschen"):
+                    st.session_state.cut_list_storage.pop()
+                    st.rerun()
+                    
+                if act_c2.button("Liste komplett leeren"):
+                    st.session_state.cut_list_storage = []
+                    st.session_state.next_id = 1
+                    st.rerun()
+
+                # CSV Download
+                csv = df_cuts.to_csv(index=False, sep=';', decimal=',').encode('utf-8')
+                st.download_button(
+                    label="📥 Liste Exportieren (CSV)",
+                    data=csv,
+                    file_name=f"Saegeliste_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv",
+                    type="primary"
+                )
 
     # --- SUB-TAB: BOGEN ---
     with tab_bend:
@@ -467,9 +551,10 @@ def main():
     df_pipe = get_pipe_data()
     calc = PipeCalculator(df_pipe)
     
+    # Session State initialisieren
     if 'fitting_list' not in st.session_state:
         st.session_state.fitting_list = []
-
+    
     # Sidebar
     dn_sel, pn_sel = render_sidebar(df_pipe)
 
