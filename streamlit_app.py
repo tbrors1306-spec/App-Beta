@@ -21,10 +21,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V4")
+logger = logging.getLogger("PipeCraft_Pro_V4_1")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 4.0",
+    page_title="Rohrbau Profi 4.1",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -243,8 +243,19 @@ class Exporter:
 # -----------------------------------------------------------------------------
 
 def render_tab_workshop(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn: str):
-    st.subheader("🪚 Smart Säge V4.0")
+    st.subheader("🪚 Smart Säge V4.1")
     
+    # --- FEHLERBEHEBUNG FÜR SESSION STATE ---
+    # Falls alte Objekte ohne 'id' im Speicher liegen, Liste bereinigen um Absturz zu verhindern.
+    if 'fitting_list' in st.session_state and st.session_state.fitting_list:
+        try:
+            # Test: Hat das erste Objekt eine ID?
+            _ = st.session_state.fitting_list[0].id
+        except AttributeError:
+            st.session_state.fitting_list = []
+            st.warning("Versions-Update: Alte Berechnungsdaten wurden zurückgesetzt.")
+            st.rerun()
+
     # State Init
     if 'fitting_list' not in st.session_state: st.session_state.fitting_list = []
     if 'saved_cuts' not in st.session_state: st.session_state.saved_cuts = []
@@ -288,15 +299,15 @@ def render_tab_workshop(calc: PipeCalculator, df: pd.DataFrame, current_dn: int,
                 st.session_state.fitting_list.append(FittingItem(unique_id, name, f_cnt, deduction, f_dn))
                 st.rerun()
 
-            # C) LIVE LISTE (Das fehlte vorher!)
+            # C) LIVE LISTE (Warenkorb)
             if st.session_state.fitting_list:
                 st.markdown("###### Aktuelle Abzüge:")
                 
-                # Als Tabelle anzeigen mit Lösch-Button pro Zeile
                 for idx, item in enumerate(st.session_state.fitting_list):
                     c_row1, c_row2, c_row3 = st.columns([3, 1.5, 0.5])
                     c_row1.text(f"{item.count}x {item.name}")
                     c_row2.text(f"-{item.total_deduction:.1f} mm")
+                    # Hier war der Fehler: Zugriff auf item.id, wenn item noch vom alten Typ war
                     if c_row3.button("🗑️", key=f"del_{item.id}"):
                         st.session_state.fitting_list.pop(idx)
                         st.rerun()
@@ -446,7 +457,6 @@ def main():
     with t3: render_tab_logbook(df_pipe)
     with t4: 
         st.info("Bogen & Stutzen Rechner hier einfügen...")
-        # (Hier könnte der alte Bogen/Stutzen Code stehen, platzsparend ausgeblendet)
 
 if __name__ == "__main__":
     main()
