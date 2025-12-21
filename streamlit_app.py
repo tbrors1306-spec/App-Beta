@@ -21,10 +21,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V7_1")
+logger = logging.getLogger("PipeCraft_Pro_V7_2")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 7.1",
+    page_title="Rohrbau Profi 7.2",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -35,7 +35,7 @@ st.markdown("""
     .main { background-color: #f8f9fa; }
     h1, h2, h3 { color: #1e293b; font-family: 'Segoe UI', sans-serif; }
     
-    /* Project Badge - Zeigt dem User wo er ist */
+    /* Project Badge */
     .project-tag {
         background-color: #0ea5e9; color: white;
         padding: 6px 12px; border-radius: 20px;
@@ -83,7 +83,7 @@ def get_pipe_data() -> pd.DataFrame:
 DB_NAME = "rohrbau_profi.db"
 
 class DatabaseRepository:
-    """Verwaltet Datenbankoperationen (V7.1: Voll vernetzt)."""
+    """Verwaltet Datenbankoperationen (V7.2: Repair Edition)."""
     
     @staticmethod
     def init_db():
@@ -114,13 +114,15 @@ class DatabaseRepository:
                 try: c.execute("ALTER TABLE rohrbuch ADD COLUMN project_id INTEGER")
                 except: pass
             
-            # 3. Default Projekt & Healing
-            c.execute("SELECT count(*) FROM projects")
-            if c.fetchone()[0] == 0:
-                c.execute("INSERT INTO projects (name, created_at) VALUES (?, ?)", ("Standard Baustelle", datetime.now().strftime("%d.%m.%Y")))
-                # Wichtig: Alte verwaiste Einträge dem Standard-Projekt zuweisen
-                c.execute("UPDATE rohrbuch SET project_id = 1 WHERE project_id IS NULL")
-                
+            # 3. REPAIR LOGIC V7.2:
+            # Stelle sicher, dass Projekt ID 1 existiert (auch wenn Projekte gelöscht wurden)
+            c.execute("INSERT OR IGNORE INTO projects (id, name, created_at) VALUES (1, 'Standard Baustelle', ?)", 
+                      (datetime.now().strftime("%d.%m.%Y"),))
+            
+            # HEALING: Alle Einträge OHNE Projekt-ID werden Projekt 1 zugewiesen
+            # Das ist der Fix für "verschwundene" Daten nach dem Update
+            c.execute("UPDATE rohrbuch SET project_id = 1 WHERE project_id IS NULL")
+            
             conn.commit()
 
     @staticmethod
@@ -142,28 +144,19 @@ class DatabaseRepository:
     def add_entry(data: dict):
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
-            # Sicherstellen, dass project_id integer ist
+            # Safety: Ensure project_id is int
             pid = data.get('project_id')
-            if pid is None: pid = 1 # Fallback
+            if pid is None: pid = 1
             
             c.execute('''INSERT INTO rohrbuch 
                          (iso, naht, datum, dimension, bauteil, laenge, charge, charge_apz, schweisser, project_id) 
                          VALUES (:iso, :naht, :datum, :dimension, :bauteil, :laenge, :charge, :charge_apz, :schweisser, ?)''', 
-                         (pid,))
-            # Update params dictionary for named placeholders except project_id which is positional now to be safe
-            data_copy = data.copy()
-            del data_copy['project_id']
-            # Re-execute with safer mixing of positional/named? No, pure sql style better:
-            # Let's stick to pure named style for cleanliness
-            c.execute('''INSERT INTO rohrbuch 
-                         (iso, naht, datum, dimension, bauteil, laenge, charge, charge_apz, schweisser, project_id) 
-                         VALUES (:iso, :naht, :datum, :dimension, :bauteil, :laenge, :charge, :charge_apz, :schweisser, :project_id)''', 
-                         data)
+                         dict(data, project_id=pid)) # Override pid for safety
             conn.commit()
 
     @staticmethod
     def get_logbook_by_project(project_id: int) -> pd.DataFrame:
-        """Filtert das Rohrbuch strikt nach Projekt-ID (V7.1)."""
+        """Filtert das Rohrbuch strikt nach Projekt-ID."""
         with sqlite3.connect(DB_NAME) as conn:
             df = pd.read_sql_query("SELECT * FROM rohrbuch WHERE project_id = ? ORDER BY id DESC", conn, params=(project_id,))
             if not df.empty: df['Löschen'] = False 
@@ -354,24 +347,19 @@ class Exporter:
 
     @staticmethod
     def to_pdf_logbook(df, project_name="Unbekannt"):
-        """V7.1: Dynamischer PDF-Titel mit Projektname"""
         if not PDF_AVAILABLE: return b""
         pdf = FPDF(orientation='L', unit='mm', format='A4')
         pdf.add_page()
-        
-        # Header
         pdf.set_font("Arial", 'B', 16)
         pdf.cell(0, 10, f"Rohrbuch: {project_name}", 0, 1, 'L')
         pdf.set_font("Arial", 'I', 10)
         pdf.cell(0, 5, f"Stand: {datetime.now().strftime('%d.%m.%Y %H:%M')}", 0, 1, 'L')
         pdf.ln(5)
-        
         cols = ["ISO", "Naht", "Datum", "DN", "Bauteil", "Charge", "APZ", "Schweißer"]
         widths = [30, 20, 25, 20, 40, 35, 35, 30]
         pdf.set_font("Arial", 'B', 8)
         for i, c in enumerate(cols): pdf.cell(widths[i], 8, c, 1)
         pdf.ln()
-        
         pdf.set_font("Arial", size=8)
         export_df = df.drop(columns=['Löschen', 'id', 'project_id'], errors='ignore')
         for _, row in export_df.iterrows():
@@ -390,17 +378,14 @@ class Exporter:
 
     @staticmethod
     def to_pdf_sawlist(df, project_name="Unbekannt"):
-        """V7.1: Dynamischer PDF-Titel für Sägeliste"""
         if not PDF_AVAILABLE: return b""
         pdf = FPDF(orientation='L', unit='mm', format='A4')
         pdf.add_page()
-        
         pdf.set_font("Arial", 'B', 16)
         pdf.cell(0, 10, f"Saegeauftrag: {project_name}", 0, 1, 'L')
         pdf.set_font("Arial", 'I', 10)
         pdf.cell(0, 5, f"Erstellt: {datetime.now().strftime('%d.%m.%Y %H:%M')}", 0, 1, 'L')
         pdf.ln(5)
-        
         cols = ["Bezeichnung", "Rohmass", "Saegemass", "Info", "Zeit"]
         keys = ["name", "raw_length", "cut_length", "details", "timestamp"]
         widths = [60, 30, 30, 80, 30]
@@ -491,7 +476,6 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
             gap = cg1.number_input("Spalt (mm)", value=3.0, step=0.5)
             dicht_anz = cg2.number_input("Dichtungen", 0, 5, 0)
             dicht_thk = cg3.number_input("Dicke (mm)", 0.0, 5.0, 2.0, disabled=(dicht_anz==0))
-            
             st.divider()
             st.caption("Bauteil-Abzüge:")
             ca1, ca2, ca3, ca4 = st.columns([2, 1.5, 1, 1])
@@ -542,7 +526,7 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                         st.rerun()
 
     with c_list:
-        st.markdown("#### 📋 Schnittliste")
+        st.markdown("#### 📋 Schnittliste & Export")
         if not st.session_state.saved_cuts:
             st.info("Noch keine Schnitte vorhanden.")
         else:
@@ -661,7 +645,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
             except ValueError as e: st.error(str(e))
 
 def render_logbook(df_pipe: pd.DataFrame):
-    st.subheader("📝 Digitales Rohrbuch (V7.1)")
+    st.subheader("📝 Digitales Rohrbuch (V7.2)")
     
     proj_name = st.session_state.get('active_project_name', 'Unbekannt')
     active_pid = st.session_state.get('active_project_id', 1)
@@ -706,12 +690,9 @@ def render_logbook(df_pipe: pd.DataFrame):
     
     if not df.empty:
         ce1, ce2, _ = st.columns([1,1,3])
-        # Export Filename
         fname_base = f"Rohrbuch_{proj_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}"
-        
         ce1.download_button("📥 Excel", Exporter.to_excel(df), f"{fname_base}.xlsx")
         if PDF_AVAILABLE: 
-            # PDF Export mit Projekt Titel
             ce2.download_button("📄 PDF", Exporter.to_pdf_logbook(df, project_name=proj_name), f"{fname_base}.pdf")
             
         edited = st.data_editor(df, hide_index=True, use_container_width=True, column_config={"Löschen": st.column_config.CheckboxColumn(default=False)}, disabled=["id", "iso", "naht", "datum", "dimension", "bauteil", "charge", "charge_apz", "schweisser", "project_id"])
@@ -743,9 +724,9 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
         with c_in2:
             w_data = HandbookCalculator.calculate_weight(od, wt_input, len_input * 1000)
             mc1, mc2, mc3 = st.columns(3)
-            mc1.metric("Leergewicht", f"{w_data['total_steel']:.1f} kg", f"{w_data['kg_per_m_steel']:.1f} kg/m")
-            mc2.metric("Gefüllt", f"{w_data['total_filled']:.1f} kg", "Hydrotest")
-            mc3.metric("Volumen", f"{w_data['volume_l']:.0f} L")
+            mc1.metric("Leergewicht (Stahl)", f"{w_data['total_steel']:.1f} kg", f"{w_data['kg_per_m_steel']:.1f} kg/m")
+            mc2.metric("Gewicht Gefüllt", f"{w_data['total_filled']:.1f} kg", "für Hydrotest")
+            mc3.metric("Füllvolumen", f"{w_data['volume_l']:.0f} Liter", "Wasserbedarf")
 
     c_geo1, c_geo2 = st.columns(2)
     with c_geo1:
@@ -791,8 +772,8 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
         
         m1, m2, m3 = st.columns(3)
         m1.metric("Bolzen", f"{bolt} x {calc_len}", f"{n_holes} Stk.")
-        m2.metric("SW", f"{sw} mm")
-        m3.metric("Moment", f"{torque} Nm", "Geschmiert" if is_lubed else "Trocken")
+        m2.metric("Schlüsselweite", f"SW {sw} mm", "Nuss/Ring")
+        m3.metric("Drehmoment", f"{torque} Nm", "Geschmiert" if is_lubed else "Trocken")
 
 # -----------------------------------------------------------------------------
 # 5. MAIN
