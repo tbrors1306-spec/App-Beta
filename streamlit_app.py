@@ -1,254 +1,358 @@
+"""
+PipeCraft Enterprise Edition (V24.0)
+------------------------------------
+Eine professionelle Streamlit-Anwendung für den industriellen Rohrleitungsbau.
+Beinhaltet Berechnungen für Zuschnitt, Isometrie, Gewicht und Kostenkalkulation.
+
+Author: Senior Lead Software Engineer (AI)
+Date: 2023-12-21
+"""
+
 import streamlit as st
 import pandas as pd
-import numpy as np
 import math
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 import sqlite3
 import json
 from dataclasses import dataclass
-from typing import Tuple, Optional, List
+from typing import List, Optional, Tuple, Dict, Any, Union
 from datetime import datetime
 from io import BytesIO
+import logging
 
-# --- OPTIONAL: PDF Support ---
+# Logging Konfiguration
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Optionale Importe mit Fehlerbehandlung
 try:
     from fpdf import FPDF
-    pdf_available = True
+    PDF_AVAILABLE = True
 except ImportError:
-    pdf_available = False
+    PDF_AVAILABLE = False
+    logger.warning("FPDF library not found. PDF export will be disabled.")
 
 # -----------------------------------------------------------------------------
-# 1. ENGINEERING CORE (Die neue Architektur)
+# 1. KONFIGURATION & STYLING
 # -----------------------------------------------------------------------------
+st.set_page_config(
+    page_title="PipeCraft Enterprise",
+    page_icon="🏗️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-@dataclass
-class PipeSpec:
-    """Definiert die physikalischen Eigenschaften eines Rohres."""
-    dn: int
-    outer_diameter_mm: float
-    wall_thickness_mm: float
-    is_zme: bool = False
-    
-    @property
-    def lining_thickness_mm(self) -> float:
-        """Schätzt die Zementdicke basierend auf DIN 2614."""
-        if not self.is_zme:
-            return 0.0
-        if self.dn <= 300: return 6.0
-        if self.dn <= 600: return 9.0
-        return 12.0
-
-class StructuralCalculator:
-    """Statische Methoden für Geometrie und Physik."""
-    
-    @staticmethod
-    def calculate_weight(spec: PipeSpec, length_mm: float) -> float:
-        """Berechnet das Gewicht für Stahl und optional ZME."""
-        length_dm = length_mm / 100.0
-        # Radien in dm umrechnen
-        ra_dm = (spec.outer_diameter_mm / 2) / 100.0
-        ri_stahl_dm = ra_dm - (spec.wall_thickness_mm / 100.0)
-        
-        # Volumen Stahl (Hohlzylinder)
-        vol_stahl = math.pi * (ra_dm**2 - ri_stahl_dm**2) * length_dm
-        weight = vol_stahl * 7.85 # Dichte Stahl
-        
-        # Volumen Zement (optional)
-        if spec.is_zme:
-            ri_cem_dm = ri_stahl_dm - (spec.lining_thickness_mm / 100.0)
-            if ri_cem_dm > 0:
-                vol_cem = math.pi * (ri_stahl_dm**2 - ri_cem_dm**2) * length_dm
-                weight += (vol_cem * 2.4) # Dichte Zementmörtel
-                
-        return round(weight, 2)
-
-    @staticmethod
-    def calculate_travel(h: float, l: float, b: float) -> Tuple[float, float]:
-        """Berechnet Diagonale (Travel) und Raumwinkel."""
-        # 3D Pythagoras
-        travel = math.sqrt(h**2 + l**2 + b**2)
-        
-        # Raumwinkel zur Horizontalen Ebene
-        spread = math.sqrt(l**2 + b**2)
-        if spread == 0:
-            angle = 90.0
-        else:
-            angle = math.degrees(math.atan(h / spread))
-            
-        return travel, angle
-
-class IsometricVisualizer:
-    """Zuständig für die Projektion von 3D-Koordinaten auf 2D-Plot."""
-    
-    @staticmethod
-    def project_iso(x, y, z):
-        """Isometrische Projektion: x=30°, y=-30° (vereinfacht)."""
-        # Umrechnung von 3D Weltkoordinaten in 2D Screenkoordinaten
-        # Wir nutzen eine simple axonometrische Projektion für "Rohrbau-Look"
-        screen_x = (x - y) * math.cos(math.radians(30))
-        screen_y = (x + y) * math.sin(math.radians(30)) + z
-        return screen_x, screen_y
-
-    @staticmethod
-    def plot_etage(h: float, l: float, b: float, cut_len: float) -> plt.Figure:
-        fig, ax = plt.subplots(figsize=(6, 4))
-        
-        # Koordinaten der Box (Start 0,0,0 -> Ziel l, b, h)
-        points_3d = {
-            'start': (0, 0, 0),
-            'l_end': (l, 0, 0),
-            'b_end': (l, b, 0), # Eckpunkt am Boden
-            'target': (l, b, h), # Endpunkt oben
-            'h_proj': (l, b, 0)  # Projektion des Endpunkts auf Boden
-        }
-        
-        # 2D Projektion
-        p2d = {k: IsometricVisualizer.project_iso(*v) for k, v in points_3d.items()}
-        
-        # Hilfslinien (Bounding Box / Dimensionen)
-        # Länge L
-        ax.plot([p2d['start'][0], p2d['l_end'][0]], [p2d['start'][1], p2d['l_end'][1]], 'k--', alpha=0.3, lw=1)
-        # Breite B (Spread)
-        ax.plot([p2d['l_end'][0], p2d['b_end'][0]], [p2d['l_end'][1], p2d['b_end'][1]], 'k--', alpha=0.3, lw=1)
-        # Höhe H
-        ax.plot([p2d['b_end'][0], p2d['target'][0]], [p2d['b_end'][1], p2d['target'][1]], 'k--', alpha=0.3, lw=1)
-        
-        # Das Rohr (Vektor Start -> Target)
-        ax.plot([p2d['start'][0], p2d['target'][0]], [p2d['start'][1], p2d['target'][1]], color='#ef4444', linewidth=3, solid_capstyle='round', zorder=10)
-        
-        # Beschriftung
-        ax.text(p2d['l_end'][0]/2, p2d['l_end'][1]/2 - 10, f"L={l}", color='#334155', fontsize=8, ha='center')
-        ax.text(p2d['b_end'][0], (p2d['b_end'][1] + p2d['target'][1])/2, f"H={h}", color='#334155', fontsize=8, ha='left')
-        
-        # Info Box im Plot
-        info = f"Zuschnitt: {round(cut_len,1)} mm"
-        ax.text(0.05, 0.95, info, transform=ax.transAxes, fontsize=10, 
-                bbox=dict(facecolor='#ecfdf5', alpha=0.8, edgecolor='#10b981', boxstyle='round,pad=0.5'))
-
-        ax.set_aspect('equal')
-        ax.axis('off')
-        return fig
-
-# -----------------------------------------------------------------------------
-# 2. MAIN APP CONFIG & DATA LAYER
-# -----------------------------------------------------------------------------
-st.set_page_config(page_title="PipeCraft V24.0 (Enterprise)", page_icon="🏗️", layout="wide")
-
-# CSS Styling (Bereinigt)
-st.markdown("""
+CUSTOM_CSS = """
 <style>
     .stApp { background-color: #f8f9fa; color: #0f172a; }
+    h1, h2, h3 { font-family: 'Helvetica Neue', sans-serif; color: #1e293b !important; }
     
-    .result-card-blue { background-color: #eff6ff; padding: 15px; border-radius: 8px; border-left: 5px solid #3b82f6; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 10px; color: #1e3a8a; }
-    .result-card-green { background: linear-gradient(to right, #f0fdf4, #ffffff); padding: 20px; border-radius: 10px; border-left: 6px solid #22c55e; box-shadow: 0 4px 8px rgba(0,0,0,0.06); text-align: center; font-size: 1.4rem; font-weight: 700; color: #14532d; }
-    .weight-box { background-color: #fff1f2; border: 1px solid #fecdd3; color: #9f1239; padding: 8px; border-radius: 6px; text-align: center; font-weight: 600; font-size: 0.95rem; margin-top: 8px; }
+    /* Info Cards */
+    .result-card-blue { 
+        background-color: #eff6ff; padding: 20px; border-radius: 12px; 
+        border-left: 6px solid #3b82f6; box-shadow: 0 2px 4px rgba(0,0,0,0.05); 
+        margin-bottom: 15px; color: #1e3a8a; font-size: 1rem; 
+    }
+    .result-card-green { 
+        background: linear-gradient(to right, #f0fdf4, #ffffff); padding: 25px; 
+        border-radius: 12px; border-left: 8px solid #22c55e; 
+        box-shadow: 0 4px 10px rgba(0,0,0,0.08); margin-bottom: 15px; 
+        text-align: center; font-size: 1.5rem; font-weight: 800; color: #14532d; 
+    }
     
-    .stNumberInput input, .stSelectbox div[data-baseweb="select"] { border-radius: 6px; border: 1px solid #cbd5e1; }
-    div.stButton > button { width: 100%; border-radius: 6px; font-weight: 600; border: 1px solid #cbd5e1; transition: all 0.2s; }
-    div.stButton > button:hover { border-color: #3b82f6; color: #3b82f6; background-color: #eff6ff; }
+    /* Utility Boxes */
+    .detail-box { 
+        background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 10px; 
+        border-radius: 6px; text-align: center; font-size: 0.9rem; 
+        color: #334155; height: 100%; display: flex; flex-direction: column; 
+        justify-content: center; 
+    }
+    .weight-box { 
+        background-color: #fff1f2; border: 1px solid #fecdd3; color: #881337; 
+        padding: 10px; border-radius: 8px; text-align: center; font-weight: bold; 
+        margin-top: 10px; 
+    }
+    
+    /* Input Styling */
+    .stNumberInput input, .stSelectbox div[data-baseweb="select"] { border-radius: 8px; }
+    div.stButton > button { width: 100%; border-radius: 8px; font-weight: 600; }
 </style>
-""", unsafe_allow_html=True)
+"""
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-# Daten-Initialisierung
-data = {
+# -----------------------------------------------------------------------------
+# 2. DATEN-SCHICHT (DATA LAYER)
+# -----------------------------------------------------------------------------
+
+# Statische Stammdaten (Hardcoded für Performance und Offline-Verfügbarkeit)
+PIPE_DATA: Dict[str, List[Union[int, float, str]]] = {
     'DN':           [25, 32, 40, 50, 65, 80, 100, 125, 150, 200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000, 1200, 1400, 1600],
     'D_Aussen':     [33.7, 42.4, 48.3, 60.3, 76.1, 88.9, 114.3, 139.7, 168.3, 219.1, 273.0, 323.9, 355.6, 406.4, 457.0, 508.0, 610.0, 711.0, 813.0, 914.0, 1016.0, 1219.0, 1422.0, 1626.0],
     'Radius_BA3':   [38, 48, 57, 76, 95, 114, 152, 190, 229, 305, 381, 457, 533, 610, 686, 762, 914, 1067, 1219, 1372, 1524, 1829, 2134, 2438],
     'T_Stueck_H':   [25, 32, 38, 51, 64, 76, 105, 124, 143, 178, 216, 254, 279, 305, 343, 381, 432, 521, 597, 673, 749, 889, 1029, 1168],
     'Red_Laenge_L': [38, 50, 64, 76, 89, 89, 102, 127, 140, 152, 178, 203, 330, 356, 381, 508, 508, 610, 660, 711, 800, 900, 1000, 1100], 
-    'Flansch_b':    [38, 40, 42, 45, 45, 50, 52, 55, 55, 62, 70, 78, 82, 85, 85, 90, 95, 105, 115, 125, 135, 155, 175, 195], # PN16 simplified
-    'Schraube':     ["M12", "M16", "M16", "M16", "M16", "M16", "M16", "M16", "M20", "M20", "M24", "M24", "M24", "M27", "M27", "M30", "M33", "M33", "M36", "M36", "M39", "M45", "M45", "M52"],
-    'Lochzahl':     [4, 4, 4, 4, 4, 8, 8, 8, 8, 12, 12, 12, 16, 16, 20, 20, 20, 24, 24, 28, 28, 32, 36, 40]
+    'Flansch_b_16': [38, 40, 42, 45, 45, 50, 52, 55, 55, 62, 70, 78, 82, 85, 85, 90, 95, 105, 115, 125, 135, 155, 175, 195],
+    'LK_k_16':      [85, 100, 110, 125, 145, 160, 180, 210, 240, 295, 355, 410, 470, 525, 585, 650, 770, 840, 950, 1050, 1160, 1380, 1590, 1820],
+    'Schraube_M_16':["M12", "M16", "M16", "M16", "M16", "M16", "M16", "M16", "M20", "M20", "M24", "M24", "M24", "M27", "M27", "M30", "M33", "M33", "M36", "M36", "M39", "M45", "M45", "M52"],
+    'L_Fest_16':    [55, 60, 60, 65, 65, 70, 70, 75, 80, 85, 100, 110, 110, 120, 130, 130, 150, 160, 170, 180, 190, 220, 240, 260],
+    'L_Los_16':     [60, 65, 65, 70, 70, 75, 80, 85, 90, 100, 115, 125, 130, 140, 150, 150, 170, 180, 190, 210, 220, 250, 280, 300],
+    'Lochzahl_16':  [4, 4, 4, 4, 4, 8, 8, 8, 8, 12, 12, 12, 16, 16, 20, 20, 20, 24, 24, 28, 28, 32, 36, 40],
+    'Flansch_b_10': [38, 40, 42, 45, 45, 50, 52, 55, 55, 62, 70, 78, 82, 85, 85, 90, 95, 105, 115, 125, 135, 155, 175, 195],
+    'LK_k_10':      [85, 100, 110, 125, 145, 160, 180, 210, 240, 295, 350, 400, 460, 515, 565, 620, 725, 840, 950, 1050, 1160, 1380, 1590, 1820],
+    'Schraube_M_10':["M12", "M16", "M16", "M16", "M16", "M16", "M16", "M16", "M20", "M20", "M20", "M20", "M20", "M24", "M24", "M24", "M27", "M27", "M30", "M30", "M33", "M36", "M39", "M45"],
+    'L_Fest_10':    [55, 60, 60, 65, 65, 70, 70, 75, 80, 85, 90, 90, 90, 100, 110, 110, 120, 130, 140, 150, 160, 190, 210, 230],
+    'L_Los_10':     [60, 65, 65, 70, 70, 75, 80, 85, 90, 100, 105, 105, 110, 120, 130, 130, 140, 150, 160, 170, 180, 210, 240, 260],
+    'Lochzahl_10':  [4, 4, 4, 4, 4, 8, 8, 8, 8, 8, 12, 12, 16, 16, 20, 20, 20, 20, 24, 28, 28, 32, 36, 40]
 }
-# Workaround to match list lengths perfectly if I missed something above:
-min_len = min([len(v) for v in data.values()])
-for k in data: data[k] = data[k][:min_len] 
-df = pd.DataFrame(data)
 
-schrauben_db = { "M12": [18, 60], "M16": [24, 130], "M20": [30, 250], "M24": [36, 420], "M27": [41, 600], "M30": [46, 830], "M33": [50, 1100], "M36": [55, 1400], "M39": [60, 1800], "M45": [70, 2700], "M52": [80, 4200] }
-ws_liste = [2.0, 2.3, 2.6, 2.9, 3.2, 3.6, 4.0, 4.5, 5.0, 5.6, 6.3, 7.1, 8.0, 8.8, 10.0, 11.0, 12.5, 14.2, 16.0]
-wandstaerken_std = {25: 3.2, 32: 3.6, 40: 3.6, 50: 3.9, 65: 5.2, 80: 5.5, 100: 6.0, 125: 6.6, 150: 7.1, 200: 8.2, 250: 9.3, 300: 9.5}
+# DataFrame Initialisierung mit Integritätscheck
+try:
+    df_pipe = pd.DataFrame(PIPE_DATA)
+except ValueError as e:
+    logger.error(f"Data Integrity Error: {e}")
+    st.error("Kritischer Fehler: Datenbank inkonsistent. Listenlängen stimmen nicht überein.")
+    st.stop()
 
-# Helper Wrappers
-def get_schrauben_info(gewinde): return schrauben_db.get(gewinde, ["?", "?"])
-def parse_abzuege(text):
-    try: return float(pd.eval(text.replace(",", ".").replace(" ", "")))
-    except: return 0.0
+# Konstanten und Mappings
+SCHRAUBEN_DB = {
+    "M12": [18, 60], "M16": [24, 130], "M20": [30, 250], "M24": [36, 420],
+    "M27": [41, 600], "M30": [46, 830], "M33": [50, 1100], "M36": [55, 1400],
+    "M39": [60, 1800], "M45": [70, 2700], "M52": [80, 4200]
+}
+WS_LISTE = [2.0, 2.3, 2.6, 2.9, 3.2, 3.6, 4.0, 4.5, 5.0, 5.6, 6.3, 7.1, 8.0, 8.8, 10.0, 11.0, 12.5, 14.2, 16.0]
+WS_STD = {25: 3.2, 32: 3.6, 40: 3.6, 50: 3.9, 65: 5.2, 80: 5.5, 100: 6.0, 125: 6.6, 150: 7.1, 200: 8.2, 250: 9.3, 300: 9.5, 350: 9.5, 400: 9.5}
 
-# Persistence & State
 DB_NAME = "pipecraft.db"
-def init_db():
-    conn = sqlite3.connect(DB_NAME); c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS rohrbuch (id INTEGER PRIMARY KEY AUTOINCREMENT, iso TEXT, naht TEXT, datum TEXT, dimension TEXT, bauteil TEXT, laenge REAL, charge TEXT, schweisser TEXT)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS kalkulation (id INTEGER PRIMARY KEY AUTOINCREMENT, typ TEXT, info TEXT, menge REAL, zeit_min REAL, kosten REAL, mat_text TEXT)''')
-    conn.commit(); conn.close()
 
-def add_rohrbuch(iso, naht, datum, dim, bauteil, laenge, charge, schweisser):
-    with sqlite3.connect(DB_NAME) as conn: conn.cursor().execute('INSERT INTO rohrbuch (iso, naht, datum, dimension, bauteil, laenge, charge, schweisser) VALUES (?,?,?,?,?,?,?,?)', (iso, naht, datum, dim, bauteil, laenge, charge, schweisser))
-def add_kalkulation(typ, info, menge, zeit, kosten, mat):
-    with sqlite3.connect(DB_NAME) as conn: conn.cursor().execute('INSERT INTO kalkulation (typ, info, menge, zeit_min, kosten, mat_text) VALUES (?,?,?,?,?,?)', (typ, info, menge, zeit, kosten, mat))
-def get_rohrbuch_df():
-    with sqlite3.connect(DB_NAME) as conn: return pd.read_sql_query("SELECT * FROM rohrbuch", conn)
-def get_kalk_df():
-    with sqlite3.connect(DB_NAME) as conn: return pd.read_sql_query("SELECT * FROM kalkulation", conn)
-def delete_item(table, entry_id):
-    with sqlite3.connect(DB_NAME) as conn: conn.cursor().execute(f"DELETE FROM {table} WHERE id=?", (entry_id,))
-def delete_all(table):
-    with sqlite3.connect(DB_NAME) as conn: conn.cursor().execute(f"DELETE FROM {table}")
+# -----------------------------------------------------------------------------
+# 3. GESCHÄFTSLOGIK (BUSINESS LOGIC)
+# -----------------------------------------------------------------------------
 
-def convert_df_to_excel(df):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer: df.to_excel(writer, index=False, sheet_name='Data')
-    return output.getvalue()
+class DatabaseManager:
+    """Verwaltet alle SQLite-Interaktionen sicher."""
+    
+    @staticmethod
+    def init_db() -> None:
+        try:
+            with sqlite3.connect(DB_NAME) as conn:
+                c = conn.cursor()
+                c.execute('''CREATE TABLE IF NOT EXISTS rohrbuch (id INTEGER PRIMARY KEY AUTOINCREMENT, iso TEXT, naht TEXT, datum TEXT, dimension TEXT, bauteil TEXT, laenge REAL, charge TEXT, schweisser TEXT)''')
+                c.execute('''CREATE TABLE IF NOT EXISTS kalkulation (id INTEGER PRIMARY KEY AUTOINCREMENT, typ TEXT, info TEXT, menge REAL, zeit_min REAL, kosten REAL, mat_text TEXT)''')
+                conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"DB Init Error: {e}")
 
-def create_pdf(df):
-    if not pdf_available: return None
-    class PDF(FPDF):
-        def header(self): self.set_font('Arial', 'B', 15); self.cell(0, 10, 'PipeCraft Report', 0, 1, 'C'); self.ln(5)
-    pdf = PDF(); pdf.add_page(); pdf.set_font("Arial", size=10)
-    pdf.cell(0, 10, f"Erstellt: {datetime.now().strftime('%d.%m.%Y')}", 0, 1)
-    pdf.cell(0, 10, f"Total: {round(df['kosten'].sum(), 2)} EUR", 0, 1); pdf.ln(5)
-    for i, r in df.iterrows(): pdf.cell(0, 8, f"{r['typ']} | {r['info']} | {r['kosten']} EUR", 0, 1)
-    return pdf.output(dest='S').encode('latin-1')
+    @staticmethod
+    def add_entry(table: str, data: Tuple) -> None:
+        try:
+            with sqlite3.connect(DB_NAME) as conn:
+                c = conn.cursor()
+                placeholders = ",".join(["?"] * len(data))
+                # Felder explizit benennen für Sicherheit wäre besser, hier vereinfacht für Flexibilität
+                if table == "rohrbuch":
+                    c.execute(f'INSERT INTO {table} (iso, naht, datum, dimension, bauteil, laenge, charge, schweisser) VALUES ({placeholders})', data)
+                elif table == "kalkulation":
+                    c.execute(f'INSERT INTO {table} (typ, info, menge, zeit_min, kosten, mat_text) VALUES ({placeholders})', data)
+                conn.commit()
+        except sqlite3.Error as e:
+            st.error(f"Datenbankfehler beim Speichern: {e}")
 
-# Session State Init
+    @staticmethod
+    def get_df(table: str) -> pd.DataFrame:
+        try:
+            with sqlite3.connect(DB_NAME) as conn:
+                return pd.read_sql_query(f"SELECT * FROM {table}", conn)
+        except Exception:
+            return pd.DataFrame()
+
+    @staticmethod
+    def delete_entry(table: str, entry_id: int) -> None:
+        with sqlite3.connect(DB_NAME) as conn:
+            conn.cursor().execute(f"DELETE FROM {table} WHERE id=?", (entry_id,))
+
+    @staticmethod
+    def clear_table(table: str) -> None:
+        with sqlite3.connect(DB_NAME) as conn:
+            conn.cursor().execute(f"DELETE FROM {table}")
+
+class Calculator:
+    """Statische Klasse für technische Berechnungen."""
+    
+    @staticmethod
+    def get_schrauben_details(gewinde: str) -> Tuple[Union[int, str], Union[int, str]]:
+        """Gibt [Schlüsselweite, Drehmoment] zurück."""
+        return SCHRAUBEN_DB.get(gewinde, ["?", "?"])
+
+    @staticmethod
+    def parse_math_string(text: str) -> float:
+        """Sicheres Parsen von Strings wie '50+30-2'."""
+        try:
+            clean_text = text.replace(",", ".").replace(" ", "")
+            # Whitelist erlaubter Zeichen für eval
+            if not all(c in "0123456789.+-*/()" for c in clean_text):
+                return 0.0
+            return float(pd.eval(clean_text))
+        except:
+            return 0.0
+
+    @staticmethod
+    def calculate_weight(dn_row_idx: int, ws: float, length_mm: float, is_zme: bool = False) -> float:
+        """
+        Berechnet das Rohrgewicht (Stahl + optional ZME).
+        Dichte Stahl: 7.85 kg/dm3
+        Dichte Zementmörtel: 2.40 kg/dm3
+        """
+        try:
+            da = df_pipe.iloc[dn_row_idx]['D_Aussen']
+            di = da - (2 * ws)
+            
+            # Volumen Stahl (dm³)
+            vol_stahl = (math.pi * ((da/100)**2 - (di/100)**2) / 4) * (length_mm/10)
+            weight = vol_stahl * 7.85
+            
+            if is_zme:
+                dn_val = df_pipe.iloc[dn_row_idx]['DN']
+                # Schätzung Zementdicke nach DIN 2614 (vereinfacht)
+                cem_th = 0.6 if dn_val < 300 else (0.9 if dn_val < 600 else 1.2) # cm
+                di_cem = (di/10) - (2 * cem_th)
+                
+                if di_cem > 0:
+                    vol_cem = (math.pi * ((di/100)**2 - (di_cem/10)**2) / 4) * (length_mm/10)
+                    weight += (vol_cem * 2.4)
+            
+            return round(weight, 1)
+        except Exception as e:
+            logger.error(f"Gewichtsberechnung fehlgeschlagen: {e}")
+            return 0.0
+
+class Visualizer:
+    """Erstellt Matplotlib-Grafiken für die GUI."""
+    
+    @staticmethod
+    def plot_stutzen_curve(r_haupt: float, r_stutzen: float) -> plt.Figure:
+        """Zeichnet die Abwicklungskurve für Stutzen."""
+        angles = range(0, 361, 5)
+        try:
+            depths = [r_haupt - math.sqrt(r_haupt**2 - (r_stutzen * math.sin(math.radians(a)))**2) for a in angles]
+        except ValueError:
+            # Fallback falls Stutzen > Hauptrohr (mathematisch nicht möglich für diese Formel)
+            return plt.figure()
+
+        fig, ax = plt.subplots(figsize=(8, 1.2))
+        ax.plot(angles, depths, color='#3b82f6', linewidth=2)
+        ax.fill_between(angles, depths, color='#eff6ff', alpha=0.5)
+        ax.set_xlim(0, 360)
+        ax.axis('off')
+        plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+        return fig
+
+    @staticmethod
+    def plot_etage_sketch(h: float, l: float, is_3d: bool = False, b: float = 0) -> plt.Figure:
+        """Zeichnet eine schematische Darstellung der Etage (2D oder 3D-Box)."""
+        fig, ax = plt.subplots(figsize=(5, 3))
+        ax.plot(0, 0, 'o', color='black') # Startpunkt
+        
+        if not is_3d:
+            # 2D Darstellung
+            ax.plot([0, l], [0, 0], '--', color='gray') # Basis L
+            ax.plot([l, l], [0, h], '--', color='gray') # Höhe H
+            ax.plot([0, l], [0, h], '-', color='#ef4444', linewidth=3) # Rohr
+            ax.text(l/2, -h*0.1 if h!=0 else -10, f"L={l}", ha='center')
+            ax.text(l, h/2, f"H={h}", va='center')
+        else:
+            # 3D "Iso-Box" Darstellung
+            # Wir simulieren 3D durch eine schräge Projektion (Kabinett-Perspektive)
+            dx, dy = b * 0.5, b * 0.3 # Versatzvektor für Tiefe
+            
+            # Vordere Ebene
+            ax.plot([0, l], [0, 0], 'k--', alpha=0.3)
+            ax.plot([l, l], [0, h], 'k--', alpha=0.3)
+            
+            # Hintere Ebene & Verbindungen
+            ax.plot([0, dx], [0, dy], 'k--', alpha=0.3)
+            ax.plot([l, l+dx], [0, dy], 'k--', alpha=0.3)
+            ax.plot([dx, l+dx], [dy, dy], 'k--', alpha=0.3)
+            ax.plot([l+dx, l+dx], [dy, h+dy], 'k--', alpha=0.3)
+            ax.plot([l, l+dx], [h, h+dy], 'k--', alpha=0.3)
+            
+            # Das Rohr (Diagonale durch den Raum)
+            ax.plot([0, l+dx], [0, h+dy], '-', color='#ef4444', linewidth=4, solid_capstyle='round')
+            
+            # Beschriftung
+            ax.text(l/2, -20, f"L={l}", ha='center', fontsize=8)
+            ax.text(l+dx+10, h/2+dy, f"H={h}", va='center', fontsize=8)
+            ax.text(dx/2-10, dy/2, f"B={b}", ha='right', fontsize=8)
+
+        ax.axis('equal')
+        ax.axis('off')
+        return fig
+
+# -----------------------------------------------------------------------------
+# 4. STATE MANAGEMENT & INITIALISIERUNG
+# -----------------------------------------------------------------------------
+
+# Initialisiere Session State mit Standardwerten
+DEFAULT_STATE = {
+    'saw_mass': 1000.0, 'saw_gap': 4.0, 'saw_deduct': "0", 'saw_zme': False,
+    'kw_dn': 200, 'kw_ws': 6.3, 'kw_verf': "WIG", 'kw_pers': 1, 'kw_anz': 1, 
+    'kw_split': False, 'kw_factor': 1.0,
+    'cut_dn': 200, 'cut_ws': 6.3, 'cut_disc': "125 mm", 'cut_anz': 1, 
+    'cut_zma': False, 'cut_iso': False, 'cut_factor': 1.0,
+    'iso_sys': "Schrumpfschlauch (WKS)", 'iso_dn': 200, 'iso_anz': 1, 'iso_factor': 1.0,
+    'mon_dn': 200, 'mon_type': "Schieber", 'mon_anz': 1, 'mon_factor': 1.0,
+    'reg_min': 60, 'reg_pers': 2, 'bogen_winkel': 45,
+    # Globale Preise
+    'p_lohn': 60.0, 'p_stahl': 2.5, 'p_dia': 45.0, 'p_cel': 0.40, 'p_draht': 15.0,
+    'p_gas': 0.05, 'p_wks': 25.0, 'p_kebu1': 15.0, 'p_kebu2': 12.0, 'p_primer': 12.0, 
+    'p_machine': 15.0
+}
+
 if 'store' not in st.session_state:
-    st.session_state.store = {
-        'saw_mass': 1000.0, 'saw_gap': 4.0, 'saw_deduct': "0", 'saw_zme': False,
-        'kw_dn': 200, 'kw_ws': 6.3, 'kw_verf': "WIG", 'kw_pers': 1, 'kw_anz': 1, 'kw_split': False, 'kw_factor': 1.0,
-        'cut_dn': 200, 'cut_ws': 6.3, 'cut_disc': "125 mm", 'cut_anz': 1, 'cut_zma': False, 'cut_iso': False, 'cut_factor': 1.0,
-        'iso_sys': "Schrumpfschlauch (WKS)", 'iso_dn': 200, 'iso_anz': 1, 'iso_factor': 1.0,
-        'mon_dn': 200, 'mon_type': "Schieber", 'mon_anz': 1, 'mon_factor': 1.0,
-        'reg_min': 60, 'reg_pers': 2, 'bogen_winkel': 45,
-        'p_lohn': 60.0, 'p_stahl': 2.5, 'p_dia': 45.0, 'p_cel': 0.40, 'p_draht': 15.0, 'p_gas': 0.05, 'p_wks': 25.0, 'p_kebu1': 15.0, 'p_kebu2': 12.0, 'p_primer': 12.0, 'p_machine': 15.0
-    }
+    st.session_state.store = DEFAULT_STATE.copy()
 
-def save_val(key): st.session_state.store[key] = st.session_state[f"_{key}"]
-def get_val(key): return st.session_state.store.get(key)
-def update_kw_dn():
+def save_val(key: str) -> None:
+    """Callback: Speichert Widget-Wert in den persistenten Store."""
+    st.session_state.store[key] = st.session_state[f"_{key}"]
+
+def get_val(key: str) -> Any:
+    """Holt Wert aus dem Store (mit Fallback auf Default)."""
+    return st.session_state.store.get(key, DEFAULT_STATE.get(key))
+
+def update_kw_dn() -> None:
+    """Callback: Spezielle Logik für DN-Änderung beim Schweißen."""
+    # 1. Wert sichern
     st.session_state.store['kw_dn'] = st.session_state['_kw_dn']
-    if st.session_state.store['kw_dn'] >= 300: st.session_state.store['kw_pers'] = 2
+    # 2. Business Rule: Ab DN 300 automatisch 2 Mann
+    if st.session_state.store['kw_dn'] >= 300:
+        st.session_state.store['kw_pers'] = 2
+        st.session_state['_kw_pers'] = 2 # Update Widget State
 
-init_db()
+# DB initialisieren
+DatabaseManager.init_db()
 
 # -----------------------------------------------------------------------------
-# 4. UI LAYER (Application Logic)
+# 5. UI IMPLEMENTATION (MAIN APP)
 # -----------------------------------------------------------------------------
+
+# --- SIDEBAR ---
 st.sidebar.image("https://cdn-icons-png.flaticon.com/512/2942/2942544.png", width=50) 
 st.sidebar.markdown("### Menü")
-selected_dn_global = st.sidebar.selectbox("Nennweite (Global)", df['DN'], index=8, key="global_dn") 
+selected_dn_global = st.sidebar.selectbox("Nennweite (Global)", df_pipe['DN'], index=8, key="global_dn") 
 selected_pn = st.sidebar.radio("Druckstufe", ["PN 16", "PN 10"], index=0, key="global_pn") 
 
-# Global Context
-row = df[df['DN'] == selected_dn_global].iloc[0]
+# Globaler Kontext
+row = df_pipe[df_pipe['DN'] == selected_dn_global].iloc[0]
 standard_radius = float(row['Radius_BA3'])
+suffix = "_16" if selected_pn == "PN 16" else "_10"
 
 st.title("PipeCraft V24.0")
 st.caption(f"🔧 Aktive Konfiguration: DN {selected_dn_global} | {selected_pn} | Radius: {standard_radius} mm")
 
+# --- HAUPTBEREICH (TABS) ---
 tab_buch, tab_werk, tab_proj, tab_info = st.tabs(["📘 Tabellenbuch", "📐 Werkstatt", "📝 Rohrbuch", "💰 Kalkulation"])
 
-# TAB 1: Tabellenbuch
+# === TAB 1: TABELLENBUCH ===
 with tab_buch:
     st.subheader("Rohr & Formstücke")
     c1, c2 = st.columns(2)
@@ -259,14 +363,20 @@ with tab_buch:
     
     st.divider()
     st.subheader(f"Flansch & Montage ({selected_pn})")
-    schraube = row['Schraube']
-    sw, nm = get_schrauben_info(schraube)
+    
+    schraube = row[f'Schraube_M{suffix}']
+    sw, nm = Calculator.get_schrauben_details(schraube)
     
     mc1, mc2 = st.columns(2)
-    mc1.markdown(f"<div class='result-card-blue'><b>Blattstärke:</b> {row['Flansch_b']} mm</div>", unsafe_allow_html=True)
-    mc2.markdown(f"<div class='result-card-blue'><b>Schraube:</b> {row['Lochzahl']}x {schraube} (SW {sw})</div>", unsafe_allow_html=True)
+    mc1.markdown(f"<div class='result-card-blue'><b>Blattstärke:</b> {row[f'Flansch_b{suffix}']} mm</div>", unsafe_allow_html=True)
+    mc2.markdown(f"<div class='result-card-blue'><b>Schraube:</b> {row[f'Lochzahl{suffix}']}x {schraube} (SW {sw})</div>", unsafe_allow_html=True)
+    
+    c_d1, c_d2, c_d3 = st.columns(3)
+    c_d1.markdown(f"<div class='detail-box'>Länge (Fest-Fest)<br><span class='detail-value'>{row[f'L_Fest{suffix}']} mm</span></div>", unsafe_allow_html=True)
+    c_d2.markdown(f"<div class='detail-box'>Länge (Fest-Los)<br><span class='detail-value'>{row[f'L_Los{suffix}']} mm</span></div>", unsafe_allow_html=True)
+    c_d3.markdown(f"<div class='detail-box'>Drehmoment<br><span class='detail-value'>{nm} Nm</span></div>", unsafe_allow_html=True)
 
-# TAB 2: Werkstatt
+# === TAB 2: WERKSTATT ===
 with tab_werk:
     tool_mode = st.radio("Werkzeug wählen:", ["📏 Säge (Passstück)", "🔄 Bogen (Zuschnitt)", "🔥 Stutzen (Schablone)", "📐 Etage (Versatz)"], horizontal=True, label_visibility="collapsed", key="tool_mode_nav")
     st.divider()
@@ -274,31 +384,32 @@ with tab_werk:
     if "Säge" in tool_mode:
         st.subheader("Passstück Berechnung")
         c_s1, c_s2 = st.columns(2)
+        # Inputs mit Session-State-Binding
         iso_mass = c_s1.number_input("Gesamtmaß (Iso)", value=get_val('saw_mass'), step=10.0, key="_saw_mass", on_change=save_val, args=('saw_mass',))
         spalt = c_s2.number_input("Wurzelspalt", value=get_val('saw_gap'), key="_saw_gap", on_change=save_val, args=('saw_gap',))
         abzug_input = st.text_input("Abzüge (z.B. 52+30)", value=get_val('saw_deduct'), key="_saw_deduct", on_change=save_val, args=('saw_deduct',))
-        abzuege = parse_abzuege(abzug_input)
         
         # Berechnung
+        abzuege = Calculator.parse_math_string(abzug_input)
         saege_erg = iso_mass - spalt - abzuege
+        
         st.markdown(f"<div class='result-card-green'>Sägelänge: {round(saege_erg, 1)} mm</div>", unsafe_allow_html=True)
         
-        # ZME Gewicht (Nutzung der neuen Klasse)
-        dn_idx = df[df['DN'] == selected_dn_global].index[0]
-        ws_calc = wandstaerken_std.get(selected_dn_global, 4.0)
+        # Gewicht
+        dn_idx = df_pipe[df_pipe['DN'] == selected_dn_global].index[0]
+        # Fallback für Wandstärke (Vereinfacht, sonst müsste man Tabelle erweitern)
+        std_ws = WS_STD.get(selected_dn_global, 4.0) 
+        
         c_zme = st.checkbox("ZME (Beton innen)?", value=get_val('saw_zme'), key="_saw_zme", on_change=save_val, args=('saw_zme',))
-        
-        spec = PipeSpec(selected_dn_global, row['D_Aussen'], ws_calc, c_zme)
-        kg = StructuralCalculator.calculate_weight(spec, saege_erg)
-        
+        kg = Calculator.calculate_weight(dn_idx, std_ws, saege_erg, c_zme)
         st.markdown(f"<div class='weight-box'>⚖️ Gewicht: ca. {kg} kg</div>", unsafe_allow_html=True)
         
-        # Info Box (Keine Grafik mehr!)
+        # Bogen-Vorschau (Info)
         bogen_winkel = st.session_state.get('bogen_winkel', 45)
         vorbau_custom = int(round(standard_radius * math.tan(math.radians(bogen_winkel/2)), 0))
         with st.expander(f"ℹ️ Abzugsmaße (DN {selected_dn_global})", expanded=True):
             st.markdown(f"""
-            * **Flansch:** {row['Flansch_b']} mm
+            * **Flansch:** {row[f'Flansch_b{suffix}']} mm
             * **Bogen 90°:** {standard_radius} mm
             * **Bogen {bogen_winkel}° (Zuschnitt):** {vorbau_custom} mm
             * **T-Stück:** {row['T_Stueck_H']} mm
@@ -312,37 +423,33 @@ with tab_werk:
         aussen = round((standard_radius + (row['D_Aussen']/2)) * angle * (math.pi/180), 1)
         innen = round((standard_radius - (row['D_Aussen']/2)) * angle * (math.pi/180), 1)
         st.markdown(f"<div class='result-card-green'>Vorbau: {vorbau} mm</div>", unsafe_allow_html=True)
-        b1, b2 = st.columns(2)
-        b1.metric("Rücken", f"{aussen} mm")
-        b2.metric("Bauch", f"{innen} mm")
+        b1, b2 = st.columns(2); b1.metric("Rücken", f"{aussen} mm"); b2.metric("Bauch", f"{innen} mm")
 
     elif "Stutzen" in tool_mode:
         st.subheader("Stutzen Schablone")
         c_st1, c_st2 = st.columns(2)
-        dn_stutzen = c_st1.selectbox("DN Stutzen", df['DN'], index=6, key="stutz_dn1")
-        dn_haupt = c_st2.selectbox("DN Hauptrohr", df['DN'], index=9, key="stutz_dn2")
+        dn_stutzen = c_st1.selectbox("DN Stutzen", df_pipe['DN'], index=6, key="stutz_dn1")
+        dn_haupt = c_st2.selectbox("DN Hauptrohr", df_pipe['DN'], index=9, key="stutz_dn2")
         
         if dn_stutzen > dn_haupt:
             st.error("Fehler: Stutzen > Hauptrohr")
         else:
-            r_k = df[df['DN'] == dn_stutzen].iloc[0]['D_Aussen'] / 2
-            r_g = df[df['DN'] == dn_haupt].iloc[0]['D_Aussen'] / 2
+            r_k = df_pipe[df_pipe['DN'] == dn_stutzen].iloc[0]['D_Aussen'] / 2
+            r_g = df_pipe[df_pipe['DN'] == dn_haupt].iloc[0]['D_Aussen'] / 2
             
             c_tab, c_plot = st.columns([1, 2])
             
-            # Daten
-            angles = [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 180]
-            data_points = []
-            for a in angles:
+            # Daten generieren
+            table_data = []
+            for a in [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 180]:
                 t = int(round(r_g - math.sqrt(r_g**2 - (r_k * math.sin(math.radians(a)))**2), 0))
-                u = int(round((r_k * 2 * math.pi) * (a/360), 0))
-                data_points.append([f"{a}°", t, u])
+                umfang_pos = int(round((r_k * 2 * math.pi) * (a/360), 0))
+                table_data.append([f"{a}°", t, umfang_pos])
             
             with c_tab:
-                st.dataframe(pd.DataFrame(data_points, columns=["Winkel", "Tiefe", "Umfang"]), hide_index=True)
-            
+                st.dataframe(pd.DataFrame(table_data, columns=["Winkel", "Tiefe", "Umfang"]), hide_index=True)
             with c_plot:
-                st.pyplot(plot_stutzen_curve(r_g, r_k))
+                st.pyplot(Visualizer.plot_stutzen_curve(r_g, r_k))
 
     elif "Etage" in tool_mode:
         st.subheader("Etagen Berechnung")
@@ -350,112 +457,342 @@ with tab_werk:
         spalt_et = st.number_input("Spalt", 4, key="et_gap")
         
         c_calc, c_vis = st.columns([1, 1])
+        weight_l = 0.0
         
-        final_len = 0.0
-        
+        # Berechnung nach Typ
         if "2D" in et_type:
             with c_calc:
                 h = st.number_input("Höhe H", 300, key="et2d_h")
                 l = st.number_input("Länge L", 400, key="et2d_l")
-                # Nutzung der Engineering Class
-                travel, angle = StructuralCalculator.calculate_travel(h, l, 0)
-                abzug = 2 * (standard_radius * math.tan(math.radians(angle/2)))
-                final_len = travel - abzug - spalt_et
-                st.markdown(f"<div class='result-card-green'>Säge: {round(final_len, 1)} mm</div>", unsafe_allow_html=True)
+                diag = math.sqrt(h**2 + l**2)
+                winkel = math.degrees(math.atan(h/l)) if l>0 else 90
+                abzug = 2 * (standard_radius * math.tan(math.radians(winkel/2)))
+                erg = diag - abzug - spalt_et
+                st.markdown(f"<div class='result-card-green'>Säge: {round(erg, 1)} mm</div>", unsafe_allow_html=True)
+                weight_l = erg
             with c_vis:
-                st.pyplot(IsometricVisualizer.plot_etage(h, l, 0, final_len))
-                
+                st.pyplot(Visualizer.plot_etage_sketch(h, l))
+        
         elif "Kastenmaß" in et_type:
             with c_calc:
-                b = st.number_input("Breite (Sprung)", 200, key="et3d_b")
+                b = st.number_input("Breite", 200, key="et3d_b")
                 h = st.number_input("Höhe", 300, key="et3d_h")
                 l = st.number_input("Länge", 400, key="et3d_l")
-                travel, angle = StructuralCalculator.calculate_travel(h, l, b)
-                abzug = 2 * (standard_radius * math.tan(math.radians(angle/2)))
-                final_len = travel - abzug - spalt_et
-                st.markdown(f"<div class='result-card-green'>Säge: {round(final_len, 1)} mm</div>", unsafe_allow_html=True)
+                diag = math.sqrt(h**2 + l**2 + b**2)
+                spread = math.sqrt(b**2 + h**2)
+                winkel = math.degrees(math.atan(spread/l)) if l>0 else 90
+                abzug = 2 * (standard_radius * math.tan(math.radians(winkel/2)))
+                erg = diag - abzug - spalt_et
+                st.markdown(f"<div class='result-card-green'>Säge: {round(erg, 1)} mm</div>", unsafe_allow_html=True)
+                weight_l = erg
             with c_vis:
-                st.pyplot(IsometricVisualizer.plot_etage(h, l, b, final_len))
+                st.pyplot(Visualizer.plot_etage_sketch(h, l, True, b))
+                
+        elif "Fix-Winkel" in et_type:
+            with c_calc:
+                b = st.number_input("Breite", 200, key="etfix_b")
+                h = st.number_input("Höhe", 300, key="etfix_h")
+                fix_w = st.selectbox("Winkel", [15, 30, 45, 60, 90], index=2, key="etfix_w")
+                spread = math.sqrt(b**2 + h**2)
+                l_req = spread / math.tan(math.radians(fix_w))
+                diag = math.sqrt(b**2 + h**2 + l_req**2)
+                abzug = 2 * (standard_radius * math.tan(math.radians(fix_w/2)))
+                erg = diag - abzug - spalt_et
+                st.info(f"Benötigte Länge L: {round(l_req, 1)} mm")
+                st.markdown(f"<div class='result-card-green'>Säge: {round(erg, 1)} mm</div>", unsafe_allow_html=True)
+                weight_l = erg
+            with c_vis:
+                st.pyplot(Visualizer.plot_etage_sketch(h, l_req, True, b))
         
-        # Gewichtsanzeige Etage
-        if final_len > 0:
-            c_zme_et = st.checkbox("ZME?", key="et_zme_check")
-            ws_calc = wandstaerken_std.get(selected_dn_global, 4.0)
-            spec = PipeSpec(selected_dn_global, row['D_Aussen'], ws_calc, c_zme_et)
-            kg = StructuralCalculator.calculate_weight(spec, final_len)
-            st.markdown(f"<div class='weight-box'>⚖️ Gewicht Passstück: ca. {kg} kg</div>", unsafe_allow_html=True)
+        # Gewicht
+        if weight_l > 0:
+            dn_idx = df_pipe[df_pipe['DN'] == selected_dn_global].index[0]
+            std_ws = WS_STD.get(selected_dn_global, 4.0)
+            c_zme_et = st.checkbox("ZME?", key="et_zme")
+            kg = Calculator.calculate_weight(dn_idx, std_ws, weight_l, c_zme_et)
+            st.markdown(f"<div class='weight-box'>⚖️ Gewicht: ca. {kg} kg</div>", unsafe_allow_html=True)
 
-# TAB 3: Rohrbuch
+# === TAB 3: ROHRBUCH ===
 with tab_proj:
     st.subheader("Digitales Rohrbuch")
     with st.form("rb_form", clear_on_submit=False):
         c1, c2, c3 = st.columns(3)
         iso = c1.text_input("ISO"); naht = c2.text_input("Naht"); datum = c3.date_input("Datum")
         c4, c5, c6 = st.columns(3)
-        dn_sel = c4.selectbox("Dimension", df['DN'], index=8, key="rb_dn_sel")
-        bauteil = c5.selectbox("Bauteil", ["📏 Rohr", "⤵️ Bogen", "⭕ Flansch", "🔗 Muffe", "🔩 Nippel"])
+        dn_sel = c4.selectbox("Dimension", df_pipe['DN'], index=8, key="rb_dn_sel")
+        bauteil = c5.selectbox("Bauteil", ["📏 Rohr", "⤵️ Bogen", "⭕ Flansch", "🔗 Muffe", "🔩 Nippel", "🪵 T-Stück", "🔻 Reduzierung"])
         laenge = c6.number_input("Länge", value=0)
         c7, c8 = st.columns(2)
         charge = c7.text_input("Charge"); schweisser = c8.text_input("Schweißer")
         if st.form_submit_button("Speichern"):
-            add_rohrbuch(iso, naht, datum.strftime("%d.%m.%Y"), f"DN {dn_sel}", bauteil, laenge, charge, schweisser)
+            DatabaseManager.add_entry("rohrbuch", (iso, naht, datum.strftime("%d.%m.%Y"), f"DN {dn_sel}", bauteil, laenge, charge, schweisser))
             st.success("Gespeichert!")
     
-    df_rb = get_rohrbuch_df()
+    df_rb = DatabaseManager.get_df("rohrbuch")
     st.dataframe(df_rb, use_container_width=True)
     with st.expander("Zeile löschen"):
         opts = {f"ID {r['id']}: {r['iso']} {r['naht']}": r['id'] for i, r in df_rb.iterrows()}
-        sel = st.selectbox("Wähle:", list(opts.keys()), key="rb_del")
-        if st.button("Löschen"): delete_item("rohrbuch", opts[sel]); st.rerun()
+        if opts:
+            sel = st.selectbox("Wähle Eintrag:", list(opts.keys()), key="rb_del_sel")
+            if st.button("Löschen", key="rb_del_btn"):
+                DatabaseManager.delete_entry("rohrbuch", opts[sel])
+                st.rerun()
 
-# TAB 4: Kalkulation
+# === TAB 4: KALKULATION ===
 with tab_info:
-    # Hier nur der Kalkulator-Teil, Preis-Settings sind oben im Expander
-    st.subheader("Kalkulations-Engine")
-    
-    # Preis DB Expander
-    with st.expander("Parameter & Preise"):
-        c_p1, c_p2 = st.columns(2)
-        st.session_state.store['p_lohn'] = c_p1.number_input("Lohn (€/h)", value=get_val('p_lohn'), key="_p_lohn", on_change=save_val, args=('p_lohn',))
-        st.session_state.store['p_machine'] = c_p2.number_input("Maschine (€/h)", value=get_val('p_machine'), key="_p_machine", on_change=save_val, args=('p_machine',))
-    
-    calc_task = st.radio("Modul", ["🔥 Fügen", "✂️ Trennen", "🔧 Montage", "🛡️ Isolierung", "🚗 Regie"], horizontal=True)
-    st.markdown("---")
-    
-    p_lohn = get_val('p_lohn'); p_machine = get_val('p_machine')
-    
-    if "Fügen" in calc_task:
-        c1, c2, c3 = st.columns(3)
-        k_dn = c1.selectbox("DN", df['DN'], index=8, key="k_dn")
-        k_ws = c2.selectbox("WS", ws_liste, index=6, key="k_ws")
-        k_verf = c3.selectbox("Verfahren", ["WIG", "E-Hand (CEL)", "MAG"], key="k_verf")
+    # EINSTELLUNGEN
+    with st.expander("💶 Preis-Datenbank (Einstellungen)"):
+        c_io1, c_io2 = st.columns(2)
+        # JSON Export
+        try:
+            json_data = json.dumps(st.session_state.store)
+            c_io1.download_button("💾 Einstellungen speichern", data=json_data, file_name="pipecraft_config.json", mime="application/json")
+        except: c_io1.error("Export Fehler")
         
-        c4, c5 = st.columns(2)
-        # Auto-Team Logic
-        def_pers = 2 if k_dn >= 300 else 1
-        pers = c4.number_input("Pers.", value=def_pers, min_value=1)
-        anz = c5.number_input("Anzahl", value=1, min_value=1)
-        
-        factor = st.slider("Zeit-Faktor", 0.5, 2.0, 1.0, 0.1)
-        
-        # Berechnung (Simplified for Demo)
-        zoll = k_dn / 25.0
-        time_min = (zoll * 12.0 / pers) * factor * anz
-        cost = (time_min / 60) * (pers * p_lohn + pers * p_machine)
-        
-        st.markdown(f"<div class='result-card-green'>{int(time_min)} min | {round(cost, 2)} €</div>", unsafe_allow_html=True)
-        if st.button("Hinzufügen"):
-            add_kalkulation("Fügen", f"DN {k_dn} {k_verf}", anz, time_min, cost, "-")
-            st.rerun()
+        # JSON Import
+        uploaded_file = c_io2.file_uploader("📂 Einstellungen laden", type=["json"])
+        if uploaded_file is not None:
+            try:
+                data = json.load(uploaded_file)
+                st.session_state.store.update(data)
+                st.success("Geladen!")
+                st.rerun()
+            except: st.error("Fehler beim Laden")
             
-    # (Weitere Module analog... ich habe den Code gekürzt um das Token-Limit nicht zu sprengen, aber die Struktur steht)
-    
+        st.divider()
+        # Parameter
+        c_p1, c_p2, c_p3 = st.columns(3)
+        st.session_state.store['p_lohn'] = c_p1.number_input("Lohn (€/h)", value=get_val('p_lohn'), key="_p_lohn", on_change=save_val, args=('p_lohn',))
+        st.session_state.store['p_stahl'] = c_p2.number_input("Stahl-Scheibe (€)", value=get_val('p_stahl'), key="_p_stahl", on_change=save_val, args=('p_stahl',))
+        st.session_state.store['p_dia'] = c_p3.number_input("Diamant-Scheibe (€)", value=get_val('p_dia'), key="_p_dia", on_change=save_val, args=('p_dia',))
+        c_p4, c_p5, c_p6 = st.columns(3)
+        st.session_state.store['p_cel'] = c_p4.number_input("Elektrode CEL (€)", value=get_val('p_cel'), key="_p_cel", on_change=save_val, args=('p_cel',))
+        st.session_state.store['p_draht'] = c_p5.number_input("Draht (€/kg)", value=get_val('p_draht'), key="_p_draht", on_change=save_val, args=('p_draht',))
+        st.session_state.store['p_gas'] = c_p6.number_input("Gas (€/L)", value=get_val('p_gas'), key="_p_gas", on_change=save_val, args=('p_gas',))
+        c_p7, c_p8, c_p9 = st.columns(3)
+        st.session_state.store['p_wks'] = c_p7.number_input("WKS (€)", value=get_val('p_wks'), key="_p_wks", on_change=save_val, args=('p_wks',))
+        st.session_state.store['p_kebu1'] = c_p8.number_input("Kebu 1.2 (€)", value=get_val('p_kebu1'), key="_p_kebu1", on_change=save_val, args=('p_kebu1',))
+        st.session_state.store['p_primer'] = c_p9.number_input("Primer (€/L)", value=get_val('p_primer'), key="_p_primer", on_change=save_val, args=('p_primer',))
+        st.session_state.store['p_machine'] = c_p9.number_input("Geräte-Pauschale (€/h)", value=get_val('p_machine'), key="_p_machine", on_change=save_val, args=('p_machine',))
+
+    # SUB-MODUS
+    kalk_sub_mode = st.radio("Ansicht:", ["Eingabe & Rechner", "📊 Projekt Status / Export"], horizontal=True, label_visibility="collapsed")
     st.divider()
-    st.subheader("Projekt Status")
-    df_k = get_kalk_df()
-    st.dataframe(df_k, use_container_width=True)
-    if not df_k.empty:
-        c_xls, c_pdf = st.columns(2)
-        c_xls.download_button("Excel Export", convert_df_to_excel(df_k), "kalkulation.xlsx")
-        if pdf_available:
-            c_pdf.download_button("PDF Export", create_pdf(df_k), "bericht.pdf")
+
+    if kalk_sub_mode == "Eingabe & Rechner":
+        calc_task = st.radio("Tätigkeit", ["🔥 Fügen (Schweißen)", "✂️ Trennen (Vorbereitung)", "🔧 Montage (Armaturen)", "🛡️ Isolierung", "🚗 Regie"], horizontal=True, key="calc_mode")
+        st.markdown("---")
+        
+        # Lokale Variablen für Lesbarkeit
+        p_lohn = get_val('p_lohn'); p_cel = get_val('p_cel'); p_draht = get_val('p_draht')
+        p_gas = get_val('p_gas'); p_wks = get_val('p_wks'); p_kebu_in = get_val('p_kebu1')
+        p_primer = get_val('p_primer'); p_stahl_disc = get_val('p_stahl'); p_dia_disc = get_val('p_dia')
+        p_machine = get_val('p_machine')
+
+        # --- MODUL 1: FÜGEN ---
+        if "Fügen" in calc_task:
+            c1, c2, c3 = st.columns(3)
+            # DN mit Callback für Auto-2-Mann
+            k_dn = c1.selectbox("DN", df_pipe['DN'], index=df_pipe['DN'].tolist().index(get_val('kw_dn')), key="_kw_dn", on_change=update_kw_dn)
+            k_ws = c2.selectbox("WS", WS_LISTE, index=get_ws_index(get_val('kw_ws')), key="_kw_ws", on_change=save_val, args=('kw_ws',))
+            
+            verf_opts = ["WIG", "E-Hand (CEL 70)", "WIG + E-Hand", "MAG"]
+            k_verf = c3.selectbox("Verfahren", verf_opts, index=get_verf_index(get_val('kw_verf')), key="_kw_verf", on_change=save_val, args=('kw_verf',))
+            
+            c4, c5 = st.columns(2)
+            if get_val('kw_dn') >= 300:
+                st.info("ℹ️ Großrohr (≥ DN 300): Team-Größe automatisch auf 2 gesetzt.")
+            
+            pers_count = c4.number_input("Anzahl Mitarbeiter", value=get_val('kw_pers'), min_value=1, key="_kw_pers", on_change=save_val, args=('kw_pers',))
+            anz = c5.number_input("Anzahl Nähte", value=get_val('kw_anz'), min_value=1, key="_kw_anz", on_change=save_val, args=('kw_anz',))
+            
+            factor = st.slider("⏱️ Zeit-Faktor", 0.5, 2.0, get_val('kw_factor'), 0.1, key="_kw_factor", on_change=save_val, args=('kw_factor',))
+            split_entry = st.checkbox("Als 2 Positionen speichern? (Vorb. + Fügen)", value=get_val('kw_split'), key="_kw_split", on_change=save_val, args=('kw_split',))
+            
+            # Kalkulation Logic
+            zoll = k_dn / 25.0
+            min_per_inch = 10.0 if "WIG" == k_verf else (3.5 if "CEL" in k_verf else 5.0)
+            ws_factor = k_ws / 6.0 if k_ws > 6.0 else 1.0
+            t_weld_base = zoll * min_per_inch * ws_factor 
+            t_fit_base = zoll * 2.5 
+            
+            duration_per_seam = ((t_weld_base + t_fit_base) / pers_count) * factor
+            crew_hourly_rate = (pers_count * p_lohn) + (pers_count * p_machine)
+            total_labor_cost = (duration_per_seam / 60 * crew_hourly_rate) * anz
+            
+            da = df_pipe[df_pipe['DN'] == k_dn].iloc[0]['D_Aussen']
+            kg = (da * math.pi * k_ws**2 * 0.7 / 1000 * 7.85 / 1000) * 1.5
+            mat_cost = 0; mat_text = ""
+            
+            if "CEL" in k_verf:
+                mat_cost = ((5.0 * kg) * 0.40) * anz; mat_text = "CEL Elektroden"
+            else:
+                mat_cost = (kg * p_draht + (duration_per_seam/60 * 15 * p_gas)) * anz; mat_text = f"{round(kg,1)} kg Draht"
+            
+            total_cost = total_labor_cost + mat_cost
+            total_time = duration_per_seam * anz
+            
+            m1, m2 = st.columns(2)
+            m1.metric("Zeit Total", f"{int(total_time)} min")
+            m2.metric("Kosten Total", f"{round(total_cost, 2)} €")
+            st.caption(f"Kalkulation: ({int(duration_per_seam)} min × {pers_count} Pers. × {round(crew_hourly_rate/60, 2)} €/min) + Material.")
+            
+            if st.button("Hinzufügen", key="add_komplett"):
+                if split_entry:
+                    t_half = total_time / 2
+                    c_half_lab = (t_half / 60) * crew_hourly_rate
+                    DatabaseManager.add_entry("kalkulation", ("Vorbereitung", f"DN {k_dn} Fitting", anz, t_half, c_half_lab, "-"))
+                    DatabaseManager.add_entry("kalkulation", ("Fügen", f"DN {k_dn} Welding", anz, t_half, c_half_lab + mat_cost, mat_text))
+                else:
+                    DatabaseManager.add_entry("kalkulation", ("Fügen", f"DN {k_dn} {k_verf}", anz, total_time, total_cost, mat_text))
+                st.success("Gespeichert!"); st.rerun()
+
+        # --- MODUL 2: TRENNEN ---
+        elif "Trennen" in calc_task:
+            c1, c2, c3, c4 = st.columns(4)
+            c_dn = c1.selectbox("DN", df_pipe['DN'], index=df_pipe['DN'].tolist().index(get_val('cut_dn')), key="_cut_dn", on_change=save_val, args=('cut_dn',))
+            c_ws = c2.selectbox("WS", WS_LISTE, index=get_ws_index(get_val('cut_ws')), key="_cut_ws", on_change=save_val, args=('cut_ws',))
+            disc_opts = ["125 mm", "180 mm", "230 mm"]
+            disc = c3.selectbox("Scheibe", disc_opts, index=get_disc_idx(get_val('cut_disc')), key="_cut_disc", on_change=save_val, args=('cut_disc',))
+            anz = c4.number_input("Anzahl", value=get_val('cut_anz'), min_value=1, key="_cut_anz", on_change=save_val, args=('cut_anz',))
+            
+            c5, c6 = st.columns(2)
+            zma = c5.checkbox("Beton (ZMA)?", value=get_val('cut_zma'), key="_cut_zma", on_change=save_val, args=('cut_zma',))
+            iso = c6.checkbox("Mantel entfernen?", value=get_val('cut_iso'), key="_cut_iso", on_change=save_val, args=('cut_iso',))
+            factor = st.slider("⏱️ Zeit-Faktor", 0.5, 2.0, get_val('cut_factor'), 0.1, key="_cut_factor", on_change=save_val, args=('cut_factor',))
+            
+            zoll = c_dn / 25.0
+            cap = 14000 if "230" in disc else (7000 if "180" in disc else 3500)
+            
+            zma_fac_d = 2.0 if zma else 1.0; zma_fac_t = 3.0 if zma else 1.0
+            iso_fac = 1.3 if iso else 1.0
+            
+            t_total = zoll * 0.5 * zma_fac_t * iso_fac * factor * anz
+            area = (math.pi * df_pipe[df_pipe['DN']==c_dn].iloc[0]['D_Aussen']) * c_ws
+            n_disc = math.ceil((area * zma_fac_d * anz) / cap)
+            
+            cost = ((t_total/60 * p_lohn) + (n_disc * (p_dia_disc if zma else p_stahl_disc)))
+            
+            m1, m2 = st.columns(2)
+            m1.metric("Zeit", f"{int(t_total)} min")
+            m2.metric("Kosten", f"{round(cost, 2)} €")
+            
+            if st.button("Hinzufügen", key="cut_add"):
+                DatabaseManager.add_entry("kalkulation", ("Vorbereitung", f"DN {c_dn} ({disc})", anz, t_total, cost, f"{n_disc}x Scheiben"))
+                st.rerun()
+
+        # --- MODUL 3: MONTAGE ---
+        elif "Montage" in calc_task:
+            c1, c2, c3 = st.columns(3)
+            m_type = c1.selectbox("Bauteil", ["Schieber", "Klappe", "Hydrant", "Formstück (T/Red)"], index=0, key="mon_type")
+            m_dn = c2.selectbox("DN", df_pipe['DN'], index=df_pipe['DN'].tolist().index(get_val('mon_dn')), key="_mon_dn", on_change=save_val, args=('mon_dn',))
+            m_anz = c3.number_input("Anzahl", value=get_val('mon_anz'), min_value=1, key="_mon_anz", on_change=save_val, args=('mon_anz',))
+            factor = st.slider("⏱️ Zeit-Faktor", 0.5, 2.0, get_val('mon_factor'), 0.1, key="_mon_factor", on_change=save_val, args=('mon_factor',))
+            
+            row_mon = df_pipe[df_pipe['DN'] == m_dn].iloc[0]
+            bolts = row_mon[f'Lochzahl{suffix}']
+            
+            time_per_piece = (bolts * 2.5) + 20 
+            total_time = time_per_piece * m_anz * factor
+            total_cost = (total_time / 60) * (p_lohn + p_machine)
+            
+            m1, m2 = st.columns(2)
+            m1.metric("Zeit Total", f"{int(total_time)} min")
+            m2.metric("Kosten Total", f"{round(total_cost, 2)} €")
+            
+            if st.button("Hinzufügen", key="mon_add"):
+                DatabaseManager.add_entry("kalkulation", ("Montage", f"DN {m_dn} {m_type}", m_anz, total_time, total_cost, f"{bolts*2}x Schrauben (geschätzt)"))
+                st.rerun()
+
+        # --- MODUL 4: ISO ---
+        elif "Isolierung" in calc_task:
+            sys_opts = ["Schrumpfschlauch (WKS)", "B80 Band (Einband)", "B50 + Folie (Zweiband)"]
+            sys = st.radio("System", sys_opts, horizontal=True, index=get_sys_idx(get_val('iso_sys')), key="_iso_sys", on_change=save_val, args=('iso_sys',))
+            c1, c2, c3 = st.columns(3)
+            i_dn = c1.selectbox("DN", df_pipe['DN'], index=df_pipe['DN'].tolist().index(get_val('iso_dn')), key="_iso_dn", on_change=save_val, args=('iso_dn',))
+            i_anz = c2.number_input("Anzahl", value=get_val('iso_anz'), min_value=1, key="_iso_anz", on_change=save_val, args=('iso_anz',))
+            factor = c3.slider("⏱️ Zeit-Faktor", 0.5, 2.0, get_val('iso_factor'), 0.1, key="_iso_factor", on_change=save_val, args=('iso_factor',))
+            
+            time = (20 + (i_dn * 0.07)) * factor * i_anz
+            da = df_pipe[df_pipe['DN'] == i_dn].iloc[0]['D_Aussen']
+            flaeche = (da * math.pi / 1000) * 0.5 * i_anz
+            
+            c_mat = 0; txt = ""
+            if "WKS" in sys: c_mat = p_wks * i_anz; txt = f"{i_anz}x WKS"
+            elif "B50" in sys: c_mat = (flaeche * 4.0 * 15.0) + (flaeche * 0.2 * 12.0); txt = "B50+Folie"
+            else: c_mat = flaeche * 4.0 * 15.0; txt = "B80 Band"
+            
+            cost = ((time/60 * p_lohn) + c_mat)
+            m1, m2 = st.columns(2)
+            m1.metric("Zeit", f"{int(time)} min"); m2.metric("Kosten", f"{round(cost, 2)} €")
+            
+            if st.button("Hinzufügen", key="iso_add"):
+                DatabaseManager.add_entry("kalkulation", ("Iso", f"DN {i_dn} {sys}", i_anz, time, cost, txt))
+                st.rerun()
+
+        # --- MODUL 5: REGIE ---
+        elif "Regie" in calc_task:
+            c1, c2 = st.columns(2)
+            t = c1.number_input("Minuten", value=get_val('reg_min'), step=15, key="_reg_min", on_change=save_val, args=('reg_min',))
+            p = c2.number_input("Personen", value=get_val('reg_pers'), min_value=1, key="_reg_pers", on_change=save_val, args=('reg_pers',))
+            cost = (t/60 * p_lohn) * p
+            st.metric("Kosten", f"{round(cost, 2)} €")
+            if st.button("Hinzufügen", key="reg_add"):
+                DatabaseManager.add_entry("kalkulation", ("Regie", f"{p} Pers.", 1, t, cost, "-"))
+                st.rerun()
+
+        st.markdown("### 📊 Projekt Status (Live)")
+        df_k = DatabaseManager.get_df("kalkulation")
+        if not df_k.empty:
+            sc1, sc2 = st.columns(2)
+            sc1.metric("Gesamt-Kosten", f"{round(df_k['kosten'].sum(), 2)} €")
+            sc2.metric("Gesamt-Stunden", f"{round(df_k['zeit_min'].sum()/60, 1)} h")
+            st.dataframe(df_k, use_container_width=True)
+            
+            c_del, c_rst = st.columns(2)
+            with c_del.expander("Zeile löschen"):
+                opts = {f"ID {r['id']}: {r['typ']}": r['id'] for i, r in df_k.iterrows()}
+                if opts:
+                    sel = st.selectbox("Wähle:", list(opts.keys()), key="kalk_del_sel_inline")
+                    if st.button("Löschen", key="kalk_del_btn_inline"):
+                        DatabaseManager.delete_entry("kalkulation", opts[sel])
+                        st.rerun()
+            if c_rst.button("Alles Löschen", type="primary", key="kalk_reset_inline"):
+                DatabaseManager.clear_table("kalkulation")
+                st.rerun()
+        else:
+            st.info("Projekt ist leer.")
+
+    elif kalk_sub_mode == "📊 Projekt Status / Export":
+        st.header("Projekt Übersicht & Export")
+        df_k = DatabaseManager.get_df("kalkulation")
+        if not df_k.empty:
+            sc1, sc2 = st.columns(2)
+            sc1.metric("Gesamt-Kosten", f"{round(df_k['kosten'].sum(), 2)} €")
+            sc2.metric("Gesamt-Stunden", f"{round(df_k['zeit_min'].sum()/60, 1)} h")
+            st.dataframe(df_k, use_container_width=True)
+            
+            c_del, c_rst = st.columns(2)
+            with c_del.expander("Zeile löschen"):
+                opts = {f"ID {r['id']}: {r['typ']}": r['id'] for i, r in df_k.iterrows()}
+                if opts:
+                    sel = st.selectbox("Wähle:", list(opts.keys()), key="kalk_del_sel")
+                    if st.button("Löschen", key="kalk_del_btn"):
+                        DatabaseManager.delete_entry("kalkulation", opts[sel])
+                        st.rerun()
+            if c_rst.button("Alles Löschen", type="primary", key="kalk_reset"):
+                DatabaseManager.clear_table("kalkulation")
+                st.rerun()
+            
+            st.markdown("---")
+            c_xls, c_pdf = st.columns(2)
+            xlsx_data = convert_df_to_excel(df_k)
+            c_xls.download_button(label="📥 Excel Exportieren", data=xlsx_data, file_name=f"PipeCraft_{datetime.now().date()}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            
+            if PDF_AVAILABLE:
+                pdf_data = create_pdf(df_k)
+                c_pdf.download_button(label="📄 PDF Exportieren", data=pdf_data, file_name=f"PipeCraft_{datetime.now().date()}.pdf", mime="application/pdf")
+            else:
+                c_pdf.warning("PDF-Export benötigt 'fpdf' (siehe requirements.txt)")
+        else:
+            st.info("Projekt ist leer.")
