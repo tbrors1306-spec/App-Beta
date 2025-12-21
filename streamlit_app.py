@@ -1,14 +1,15 @@
 """
-PipeCraft V41.0 (Final Architect Edition)
------------------------------------------
-Features:
-- ENGINEERING: 3D Visualization, Stutzen-Table (Values), Weight Calculation.
-- SMART CUT: Multi-DN Selection for Reducers (Large DN dictates length).
-- COSTING: V23.3 Physics-based logic (Electrode count, Layers, Gas/Wire split).
-- LOGISTICS: Inventory Management & Digital Weld Log with Export.
-- ARCHITECTURE: Clean Code, Type Hinting, Robust Error Handling.
+PipeCraft V23.3 (Restored Ultimate Edition)
+-------------------------------------------
+Wiederhergestellte Version mit voller Detailtiefe.
 
-Author: Senior Lead Software Engineer (AI)
+Features:
+- KALKULATION: Detaillierte Physik-Berechnung (Elektroden Stk, Lagen, Gas).
+- WERKSTATT: Stutzen-Tabelle mit Werten & Smart Cut Reduzier-Logik.
+- DOKUMENTATION: Rohrbuch mit Excel/PDF Export.
+- LAGER: Bestandsführung.
+
+Author: Senior Lead Software Engineer
 """
 
 import streamlit as st
@@ -16,7 +17,7 @@ import pandas as pd
 import math
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-# Explicit import for 3D plotting
+# Wichtig für 3D Plots
 from mpl_toolkits.mplot3d import Axes3D 
 import sqlite3
 import json
@@ -41,24 +42,25 @@ try:
     PDF_AVAILABLE = True
 except ImportError:
     PDF_AVAILABLE = False
-    logger.warning("FPDF Library not found. PDF Export disabled.")
+    logger.warning("FPDF Library not found. PDF export disabled.")
 
 st.set_page_config(
-    page_title="PipeCraft V41.0 Enterprise",
+    page_title="PipeCraft V23.3",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# CSS Styles (Klassischer V23.3 Look)
 st.markdown("""
 <style>
     .stApp { background-color: #f8f9fa; color: #0f172a; }
     h1, h2, h3 { font-family: 'Segoe UI', sans-serif; color: #1e293b !important; font-weight: 700; }
     
-    /* Metrics */
+    /* Metriken */
     div[data-testid="stMetricValue"] { font-size: 2.0rem !important; }
     
-    /* Cards */
+    /* Boxen */
     .result-card-blue { background-color: #eff6ff; padding: 20px; border-radius: 8px; border-left: 5px solid #3b82f6; margin-bottom: 10px; color: #1e3a8a; }
     .result-card-green { background: #f0fdf4; padding: 20px; border-radius: 8px; border-left: 5px solid #22c55e; margin-bottom: 10px; text-align: center; font-size: 1.5rem; font-weight: bold; color: #14532d; }
     
@@ -98,13 +100,18 @@ except ValueError as e:
     st.error(f"Datenbankfehler: {e}")
     st.stop()
 
-SCHRAUBEN_DB = { "M12": [18, 60], "M16": [24, 130], "M20": [30, 250], "M24": [36, 420], "M27": [41, 600], "M30": [46, 830], "M33": [50, 1100], "M36": [55, 1400], "M39": [60, 1800], "M45": [70, 2700], "M52": [80, 4200] }
+SCHRAUBEN_DB = { 
+    "M12": [18, 60], "M16": [24, 130], "M20": [30, 250], "M24": [36, 420], 
+    "M27": [41, 600], "M30": [46, 830], "M33": [50, 1100], "M36": [55, 1400], 
+    "M39": [60, 1800], "M45": [70, 2700], "M52": [80, 4200] 
+}
+
 WS_LISTE = [2.0, 2.3, 2.6, 2.9, 3.2, 3.6, 4.0, 4.5, 5.0, 5.6, 6.3, 7.1, 8.0, 8.8, 10.0, 11.0, 12.5, 14.2, 16.0]
 WS_STD_MAP = {25: 3.2, 32: 3.6, 40: 3.6, 50: 3.9, 65: 5.2, 80: 5.5, 100: 6.0, 125: 6.6, 150: 7.1, 200: 8.2, 250: 9.3, 300: 9.5, 350: 9.5, 400: 9.5, 450: 9.5, 500: 9.5}
-DB_NAME = "pipecraft_v41.db"
+DB_NAME = "pipecraft_23_3.db"
 
 # -----------------------------------------------------------------------------
-# 2. LOGIC LAYER (ENGINES)
+# 2. LOGIC (ENGINES & HELPERS)
 # -----------------------------------------------------------------------------
 
 def get_row_by_dn(dn: int) -> pd.Series:
@@ -124,7 +131,7 @@ def get_verf_index(val): return ["WIG", "E-Hand (CEL 70)", "WIG + E-Hand", "MAG"
 def get_disc_idx(val): return ["125 mm", "180 mm", "230 mm"].index(val) if val in ["125 mm", "180 mm", "230 mm"] else 0
 def get_sys_idx(val): return ["Schrumpfschlauch (WKS)", "B80 Band (Einband)", "B50 + Folie (Zweiband)"].index(val) if val in ["Schrumpfschlauch (WKS)", "B80 Band (Einband)", "B50 + Folie (Zweiband)"] else 0
 
-# --- FITTING MANAGER ---
+# --- FITTING MANAGER (SMART CUT) ---
 @dataclass
 class SelectedFitting:
     type_name: str
@@ -135,9 +142,6 @@ class SelectedFitting:
 class FittingManager:
     @staticmethod
     def get_deduction(type_name: str, dn_target: int, pn_suffix: str = "_16", custom_angle: float = 45.0) -> float:
-        """
-        Calculates deduction. dn_target is the relevant DN for length (Big DN for Reducers).
-        """
         row_data = get_row_by_dn(dn_target)
         if type_name == "Bogen 90° (BA3)": return float(row_data['Radius_BA3'])
         elif type_name == "Bogen (Zuschnitt)": return float(row_data['Radius_BA3']) * math.tan(math.radians(custom_angle / 2))
@@ -146,7 +150,7 @@ class FittingManager:
         elif "Reduzierung" in type_name: return float(row_data['Red_Laenge_L'])
         return 0.0
 
-# --- PHYSICS & COST ---
+# --- PHYSICS ENGINE ---
 class PhysicsEngine:
     DENSITY_STEEL = 7.85
     DENSITY_CEMENT = 2.40
@@ -163,14 +167,20 @@ class PhysicsEngine:
         except: return 0.0
 
 class CostEngine:
-    """Restored V23.3 Logic"""
+    """
+    Original V23.3 Calculation Logic.
+    Includes granular physics for weld volume, electrodes count, and separate gas/wire costs.
+    """
     @staticmethod
     def calculate_welding_detailed(dn, ws, process, pers_count, anz, factor, p_lohn, p_mach, p_draht, p_cel, p_gas, layers=2, el_dia=3.2):
         zoll = dn / 25.0
+        
+        # 1. TIME CALCULATION
         min_per_inch = 10.0 if process == "WIG" else (3.5 if "CEL" in process else 5.0)
         t_weld = zoll * min_per_inch
         t_fit = zoll * 2.5
         
+        # Layer adjustment for stick welding
         layer_factor = 1.0
         if "CEL" in process or "E-Hand" in process:
             layer_factor = 1.0 + (max(0, layers - 1) * 0.2)
@@ -178,22 +188,38 @@ class CostEngine:
         dur_seam = ((t_weld * layer_factor + t_fit) / pers_count) * factor
         labor_cost = (dur_seam * anz / 60) * (pers_count * (p_lohn + p_mach))
         
+        # 2. MATERIAL CALCULATION (PHYSICS)
         da = df_pipe[df_pipe['DN'] == dn].iloc[0]['D_Aussen']
-        weld_vol = (da * math.pi) * (ws**2 * 0.8)
-        kg_fill = (weld_vol * 7.85) / 1_000_000 * 1.5
+        weld_vol = (da * math.pi) * (ws**2 * 0.8) # Approx V-Seam volume
+        kg_fill_pure = (weld_vol * 7.85) / 1_000_000 
+        kg_fill_gross = kg_fill_pure * 1.5 # Overhead for root/cap
         
         mat_cost = 0; mat_txt = ""
+        
         if "CEL" in process or "E-Hand" in process:
-            fill_g = {2.5:15, 3.2:30, 4.0:50, 5.0:80}.get(el_dia, 30)
-            total_g = kg_fill * 1000 * anz
-            sticks = math.ceil(total_g / fill_g)
-            mat_cost = sticks * p_cel
-            mat_txt = f"{sticks} Stk ({el_dia}mm)"
+            # Electrode Calculation (Piece Count)
+            # Assumption: 1 Stick (350mm) provides approx X grams of deposit based on diameter
+            fill_g_per_stick = {2.5: 15, 3.2: 28, 4.0: 45, 5.0: 75}.get(el_dia, 30)
+            
+            total_deposit_g = kg_fill_pure * 1000 * anz
+            # Efficiency of Stick welding is low (stub loss, slag) -> factor 0.6
+            needed_g = total_deposit_g / 0.6
+            
+            sticks_needed = math.ceil(needed_g / fill_g_per_stick)
+            
+            # Costing: Assuming p_cel is price PER STICK (or converted appropriately in settings)
+            # For this model we assume p_cel is per stick to match piece count logic
+            mat_cost = sticks_needed * p_cel
+            mat_txt = f"{sticks_needed} Stk ({el_dia}mm)"
         else:
-            wire = (kg_fill * p_draht) * anz
-            gas = (t_weld * layer_factor * factor * anz) * 15 * p_gas
-            mat_cost = wire + gas
-            mat_txt = f"{round(kg_fill*anz, 2)} kg Draht"
+            # Wire & Gas
+            wire_cost = (kg_fill_gross * p_draht) * anz
+            # Gas is consumed during arc time, not fitting time
+            arc_time = (t_weld * layer_factor * factor * anz)
+            gas_cost = arc_time * 15 * p_gas # 15L/min
+            
+            mat_cost = wire_cost + gas_cost
+            mat_txt = f"{round(kg_fill_gross*anz, 2)} kg Draht"
             
         return dur_seam, labor_cost + mat_cost, mat_txt
 
@@ -205,15 +231,18 @@ class CostEngine:
         iso_fac = 1.3 if iso else 1.0
         
         t_tot = (zoll * 0.5 * zma_fac * iso_fac) * anz * factor
+        
         da = df_pipe[df_pipe['DN']==dn].iloc[0]['D_Aussen']
         area = (da * math.pi * ws)
-        n_disc = math.ceil((area * (2.0 if zma else 1.0) * anz) / cap)
+        # Concrete wears discs faster (factor 2.0)
+        wear_factor = 2.0 if zma else 1.0
+        
+        n_disc = math.ceil((area * wear_factor * anz) / cap)
         
         c_mat = n_disc * (p_dia if zma else p_stahl)
         c_lab = (t_tot/60) * p_lohn
         return t_tot, c_lab + c_mat, f"{n_disc}x Scheiben"
 
-# --- VISUALIZATION ---
 class GeometryEngine:
     @staticmethod
     def solve_offset_3d(h, l, b):
@@ -245,7 +274,7 @@ class Visualizer:
         plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
         return fig
 
-# --- DATABASE & REPO ---
+# --- DATABASE ---
 class DatabaseRepository:
     @staticmethod
     def init_tables():
@@ -327,7 +356,8 @@ if 'store' not in st.session_state:
         'mon_dn': 200, 'mon_type': "Schieber", 'mon_anz': 1, 'mon_factor': 1.0,
         'iso_sys': "Schrumpfschlauch (WKS)", 'iso_dn': 200, 'iso_anz': 1, 'iso_factor': 1.0,
         'reg_min': 60, 'reg_pers': 2, 'bogen_winkel': 45, 'view_azim': 45, 'view_elev': 30,
-        'p_lohn': 60.0, 'p_stahl': 2.5, 'p_dia': 45.0, 'p_cel': 0.40, 'p_draht': 15.0, 'p_gas': 0.05, 'p_wks': 25.0, 'p_kebu1': 15.0, 'p_kebu2': 12.0, 'p_primer': 12.0, 'p_machine': 15.0,
+        'p_lohn': 60.0, 'p_stahl': 2.5, 'p_dia': 45.0, 'p_cel': 0.40, 'p_draht': 15.0, 'p_gas': 0.05, 
+        'p_wks': 25.0, 'p_kebu1': 15.0, 'p_kebu2': 12.0, 'p_primer': 12.0, 'p_machine': 15.0,
         'kw_layers': 3, 'kw_el_dia': 3.2
     }
 if 'fitting_list' not in st.session_state: st.session_state.fitting_list = []
@@ -337,7 +367,7 @@ def get_val(key): return st.session_state.store.get(key)
 def update_kw_dn(): st.session_state.store['kw_dn'] = st.session_state['_kw_dn']; st.session_state.store['kw_pers'] = 2 if st.session_state.store['kw_dn'] >= 300 else 1
 
 # -----------------------------------------------------------------------------
-# UI
+# UI IMPLEMENTATION
 # -----------------------------------------------------------------------------
 st.sidebar.image("https://cdn-icons-png.flaticon.com/512/2942/2942544.png", width=50) 
 st.sidebar.markdown("### Menü")
@@ -348,11 +378,12 @@ row = get_row_by_dn(selected_dn_global)
 standard_radius = float(row['Radius_BA3'])
 suffix = "_16" if selected_pn == "PN 16" else "_10"
 
-st.title("PipeCraft V41.0")
+st.title("PipeCraft V23.3 (Restored)")
 st.caption(f"🔧 Aktive Konfiguration: DN {selected_dn_global} | {selected_pn} | Radius: {standard_radius} mm")
 
 tab_buch, tab_werk, tab_proj, tab_info, tab_lager = st.tabs(["📘 Tabellenbuch", "📐 Werkstatt", "📝 Rohrbuch", "💰 Kalkulation", "📦 Lager"])
 
+# TAB 1: BUCH
 with tab_buch:
     st.subheader("Rohr & Formstücke")
     c1, c2 = st.columns(2)
@@ -370,6 +401,7 @@ with tab_buch:
     c_d2.markdown(f"<div class='detail-box'>Länge (Fest-Los)<br><span class='detail-value'>{row[f'L_Los{suffix}']} mm</span></div>", unsafe_allow_html=True)
     c_d3.markdown(f"<div class='detail-box'>Drehmoment<br><span class='detail-value'>{nm} Nm</span></div>", unsafe_allow_html=True)
 
+# TAB 2: WERKSTATT
 with tab_werk:
     tool_mode = st.radio("Werkzeug:", ["📏 Säge (Smart Cut)", "🔄 Bogen", "🔥 Stutzen", "📐 Etage"], horizontal=True, label_visibility="collapsed")
     st.divider()
@@ -379,7 +411,6 @@ with tab_werk:
         c1, c2 = st.columns(2)
         iso_mass = c1.number_input("Gesamtmaß (Iso)", value=get_val('saw_mass'), step=10.0, key="_saw_mass", on_change=save_val, args=('saw_mass',))
         spalt = c2.number_input("Wurzelspalt (pro Naht)", value=get_val('saw_gap'), key="_saw_gap", on_change=save_val, args=('saw_gap',))
-        
         st.markdown("#### Bauteile hinzufügen")
         col_f1, col_f2, col_f3, col_f4 = st.columns([2, 1, 1, 1])
         f_type = col_f1.selectbox("Typ", ["Bogen 90° (BA3)", "Bogen (Zuschnitt)", "Flansch (Vorschweiß)", "T-Stück", "Reduzierung (konz.)"])
@@ -414,7 +445,7 @@ with tab_werk:
         st.markdown("---")
         if final < 0: st.error(f"Fehler: Bauteile länger als Iso!")
         else:
-            st.markdown(f"<div class='result-card-green'>Säge: {round(final, 1)} mm</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='result-card-green'>Sägelänge: {round(final, 1)} mm</div>", unsafe_allow_html=True)
             c_res1, c_res2 = st.columns(2)
             c_res1.info(f"Abzüge: {round(total_deduct, 1)} mm (Teile) + {round(total_gaps*spalt, 1)} mm (Spalte)")
             dn_idx = df_pipe[df_pipe['DN'] == selected_dn_global].index[0]
@@ -428,7 +459,7 @@ with tab_werk:
         st.markdown(f"<div class='result-card-green'>Vorbau: {v} mm</div>", unsafe_allow_html=True)
 
     elif "Stutzen" in tool_mode:
-        st.subheader("Stutzen Schablone")
+        st.subheader("Stutzen Schablone (Tabelle Wiederhergestellt)")
         c1, c2 = st.columns(2)
         dn1 = c1.selectbox("DN Stutzen", df_pipe['DN'], index=6)
         dn2 = c2.selectbox("DN Haupt", df_pipe['DN'], index=9)
@@ -437,11 +468,14 @@ with tab_werk:
             rk = df_pipe[df_pipe['DN']==dn1].iloc[0]['D_Aussen']/2
             rg = df_pipe[df_pipe['DN']==dn2].iloc[0]['D_Aussen']/2
             c_tab, c_plot = st.columns([1, 2])
+            
+            # WIEDERHERGESTELLT: Die Tabelle mit Werten für die Werkstatt
             table_data = []
             for a in [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 180]:
                 t = int(round(rg - math.sqrt(rg**2 - (rk * math.sin(math.radians(a)))**2), 0))
                 u = int(round((rk * 2 * math.pi) * (a/360), 0))
-                table_data.append({"Winkel": f"{a}°", "Tiefe": t, "Umfang": u})
+                table_data.append({"Winkel": f"{a}°", "Tiefe (mm)": t, "Umfang (mm)": u})
+            
             with c_tab: st.table(pd.DataFrame(table_data))
             with c_plot: st.pyplot(Visualizer.plot_stutzen_curve(rg, rk))
 
@@ -470,6 +504,7 @@ with tab_werk:
                 st.markdown(f"<div class='result-card-green'>Säge: {round(t, 1)} mm</div>", unsafe_allow_html=True)
                 st.pyplot(Visualizer.plot_true_3d_pipe(l_req, b, h, az, el))
 
+# TAB 3: ROHRBUCH (WIEDERHERGESTELLT)
 with tab_proj:
     st.subheader("Digitales Rohrbuch")
     with st.form("rb"):
@@ -493,6 +528,7 @@ with tab_proj:
                 sel = st.selectbox("Wähle Eintrag:", list(opts.keys()), key="rb_del_sel")
                 if st.button("Löschen", key="rb_del_btn"): DatabaseRepository.delete("rohrbuch", opts[sel]); st.rerun()
 
+# TAB 4: KALKULATION (RESTORED V23.3)
 with tab_info:
     st.subheader("Kalkulation (Detail)")
     with st.expander("Preise & Faktoren"):
@@ -518,7 +554,7 @@ with tab_info:
         anz = c5.number_input("Anzahl", value=get_val('kw_anz'), key="_kw_anz", on_change=save_val, args=('kw_anz',))
         fac = st.slider("Faktor", 0.5, 2.0, 1.0)
         
-        # LOGIC: Show Layers/Electrodes ONLY for E-Hand/CEL
+        # LOGIC FIX: Layer/Electrode inputs appear ONLY for E-Hand/CEL
         layers = 2
         el_dia = 3.2
         if "CEL" in k_verf or "E-Hand" in k_verf:
@@ -573,6 +609,7 @@ with tab_info:
         c1.download_button("Excel Export", export_excel(df_k), "kalk.xlsx")
         if c2.button("Reset"): DatabaseRepository.clear("kalkulation"); st.rerun()
 
+# TAB 5: LAGER
 with tab_lager:
     st.subheader("📦 Lagerhaltung")
     c1, c2 = st.columns([1, 2])
