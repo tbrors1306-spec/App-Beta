@@ -5,7 +5,7 @@ import sqlite3
 import logging
 from dataclasses import dataclass, asdict
 from io import BytesIO
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 from datetime import datetime
 import matplotlib.pyplot as plt
 
@@ -21,22 +21,21 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V5")
+logger = logging.getLogger("PipeCraft_Pro_V5_1")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 5.0",
+    page_title="Rohrbau Profi 5.1",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Modernes CSS (Vereint Styles aus V2 und V4)
 st.markdown("""
 <style>
     .main { background-color: #f8f9fa; }
     h1, h2, h3 { color: #1e293b; font-family: 'Segoe UI', sans-serif; }
     
-    /* Ergebnis Box (Grün) - aus V4 */
+    /* Boxen Styles */
     .success-box {
         padding: 20px;
         background-color: #dcfce7;
@@ -47,8 +46,6 @@ st.markdown("""
         text-align: center;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
-    
-    /* Fehler Box (Rot) - aus V4 */
     .error-box {
         padding: 20px;
         background-color: #fee2e2;
@@ -58,8 +55,6 @@ st.markdown("""
         margin: 10px 0;
         text-align: center;
     }
-
-    /* Info Box (Blau) - aus V1 */
     .info-box {
         padding: 15px;
         background-color: #eff6ff;
@@ -68,18 +63,20 @@ st.markdown("""
         border-left: 4px solid #3b82f6;
         margin-bottom: 10px;
     }
-
+    
+    /* Metriken hervorheben */
     div[data-testid="stMetric"] {
         background-color: #ffffff;
         border: 1px solid #e2e8f0;
         border-radius: 8px;
         padding: 10px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
     }
 </style>
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 2. DATEN-SCHICHT (DATA LAYER)
+# 2. DATEN-SCHICHT
 # -----------------------------------------------------------------------------
 
 @st.cache_data
@@ -116,29 +113,24 @@ SCHRAUBEN_DB = {
 DB_NAME = "rohrbau_profi.db"
 
 class DatabaseRepository:
-    """Verwaltet Datenbankoperationen (RESTORED V2.1 Logic)."""
+    """Verwaltet Datenbankoperationen."""
     
     @staticmethod
     def init_db():
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
-            # Rohrbuch Tabelle erstellen
             c.execute('''CREATE TABLE IF NOT EXISTS rohrbuch (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, 
                         iso TEXT, naht TEXT, datum TEXT, 
                         dimension TEXT, bauteil TEXT, laenge REAL, 
                         charge TEXT, charge_apz TEXT, schweisser TEXT)''')
             
-            # --- MIGRATION CHECK (V2.1 Feature) ---
-            # Prüft ob 'charge_apz' existiert, wenn nicht, wird sie hinzugefügt
+            # Migration APZ
             c.execute("PRAGMA table_info(rohrbuch)")
             cols = [info[1] for info in c.fetchall()]
             if 'charge_apz' not in cols:
-                try:
-                    c.execute("ALTER TABLE rohrbuch ADD COLUMN charge_apz TEXT")
-                    logging.info("DB Migration: Spalte charge_apz hinzugefügt.")
-                except Exception as e: 
-                    logging.error(f"Migration fehlgeschlagen: {e}")
+                try: c.execute("ALTER TABLE rohrbuch ADD COLUMN charge_apz TEXT")
+                except: pass
             conn.commit()
 
     @staticmethod
@@ -155,12 +147,9 @@ class DatabaseRepository:
     def get_all() -> pd.DataFrame:
         with sqlite3.connect(DB_NAME) as conn:
             df = pd.read_sql_query("SELECT * FROM rohrbuch ORDER BY id DESC", conn)
-            # Füge Spalte für Editor-Handling hinzu
             if not df.empty: df['Löschen'] = False 
             else: 
-                # Leeres DF Struktur sicherstellen
-                cols = ["id", "iso", "naht", "datum", "dimension", "bauteil", "laenge", "charge", "charge_apz", "schweisser", "Löschen"]
-                df = pd.DataFrame(columns=cols)
+                df = pd.DataFrame(columns=["id", "iso", "naht", "datum", "dimension", "bauteil", "laenge", "charge", "charge_apz", "schweisser", "Löschen"])
             return df
 
     @staticmethod
@@ -172,12 +161,11 @@ class DatabaseRepository:
             conn.commit()
 
 # -----------------------------------------------------------------------------
-# 3. HELPER, LOGIK & GEOMETRIE
+# 3. HELPER & LOGIK
 # -----------------------------------------------------------------------------
 
 @dataclass
 class FittingItem:
-    """Säge V4: Ein Bauteil in der AKTUELLEN Berechnung."""
     id: str
     name: str
     count: int
@@ -190,7 +178,6 @@ class FittingItem:
 
 @dataclass
 class SavedCut:
-    """Säge V4: Ein gespeicherter Schnitt."""
     id: int
     raw_length: float
     cut_length: float
@@ -198,7 +185,7 @@ class SavedCut:
     timestamp: str
 
 class PipeCalculator:
-    """Zentrale Berechnungsklasse (Vereint V1 und V4 Logik)."""
+    """Zentrale Logik für Säge, Bogen und Stutzen."""
     
     def __init__(self, df: pd.DataFrame):
         self.df = df
@@ -207,7 +194,7 @@ class PipeCalculator:
         row = self.df[self.df['DN'] == dn]
         return row.iloc[0] if not row.empty else self.df.iloc[0]
 
-    # --- SÄGE LOGIK (V4) ---
+    # --- SÄGE (Z-Maße) ---
     def get_deduction(self, f_type: str, dn: int, pn: str, angle: float = 90.0) -> float:
         row = self.get_row(dn)
         suffix = "_16" if pn == "PN 16" else "_10"
@@ -219,67 +206,66 @@ class PipeCalculator:
         if "Reduzierung" in f_type: return float(row['Red_Laenge_L'])
         return 0.0
 
-    # --- STUTZEN LOGIK (RESTORED V1) ---
+    # --- BOGEN-RECHNER (NEU: inkl. Mitte) ---
+    def calculate_bend_details(self, dn: int, angle: float) -> Dict[str, float]:
+        """Berechnet alle relevanten Bogenmaße für die Geometrie-Ansicht."""
+        row = self.get_row(dn)
+        r = float(row['Radius_BA3'])
+        da = float(row['D_Aussen'])
+        rad = math.radians(angle)
+        
+        return {
+            "vorbau": r * math.tan(rad / 2),
+            "bogen_aussen": (r + da/2) * rad,
+            "bogen_mitte": r * rad,           # Das fehlende Feature
+            "bogen_innen": (r - da/2) * rad
+        }
+
+    # --- STUTZEN (Sinus) ---
     def calculate_stutzen_coords(self, dn_haupt: int, dn_stutzen: int) -> pd.DataFrame:
-        """Berechnet nur die Koordinaten-Tabelle für Stutzen."""
         r_main = self.get_row(dn_haupt)['D_Aussen'] / 2
         r_stub = self.get_row(dn_stutzen)['D_Aussen'] / 2
 
-        if r_stub > r_main:
-            raise ValueError(f"Stutzen DN {dn_stutzen} ist größer als Hauptrohr DN {dn_haupt}!")
+        if r_stub > r_main: raise ValueError(f"Stutzen DN {dn_stutzen} ist größer als Hauptrohr!")
 
         table_data = []
         for angle in [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 180]:
-            # Verschneidungsformel
             try:
                 term = r_stub * math.sin(math.radians(angle))
                 t_val = r_main - math.sqrt(r_main**2 - term**2)
-            except ValueError:
-                t_val = 0 # Sollte durch Check oben abgefangen sein, aber sicher ist sicher
-            
+            except: t_val = 0
             u_val = (r_stub * 2 * math.pi) * (angle / 360)
-            table_data.append({
-                "Winkel": f"{angle}°",
-                "Tiefe (mm)": round(t_val, 1),
-                "Umfang (mm)": round(u_val, 1)
-            })
+            table_data.append({"Winkel": f"{angle}°", "Tiefe (mm)": round(t_val, 1), "Umfang (mm)": round(u_val, 1)})
         return pd.DataFrame(table_data)
 
 class Visualizer:
-    """Klasse für Plots (RESTORED V1)."""
-    
     @staticmethod
     def plot_stutzen(dn_haupt: int, dn_stutzen: int, df_pipe: pd.DataFrame) -> plt.Figure:
-        # Daten holen
         row_h = df_pipe[df_pipe['DN'] == dn_haupt].iloc[0]
         row_s = df_pipe[df_pipe['DN'] == dn_stutzen].iloc[0]
         r_main = row_h['D_Aussen'] / 2
         r_stub = row_s['D_Aussen'] / 2
-
-        if r_stub > r_main: return None # Fehler wird im UI gefangen
+        
+        if r_stub > r_main: return None
 
         angles = range(0, 361, 5)
         depths = []
         for a in angles:
             try:
                 term = r_stub * math.sin(math.radians(a))
-                val = r_main - math.sqrt(r_main**2 - term**2)
-                depths.append(val)
-            except:
-                depths.append(0)
+                depths.append(r_main - math.sqrt(r_main**2 - term**2))
+            except: depths.append(0)
 
         fig, ax = plt.subplots(figsize=(8, 2))
         ax.plot(angles, depths, color='#3b82f6', linewidth=2)
         ax.fill_between(angles, depths, color='#eff6ff', alpha=0.5)
         ax.set_xlim(0, 360)
         ax.set_ylabel("Tiefe (mm)")
-        ax.set_xlabel("Abwicklung (°)")
         ax.grid(True, linestyle='--', alpha=0.5)
         plt.tight_layout()
         return fig
 
 class Exporter:
-    """Export Logik (RESTORED V2.1 + V4 Fixes)."""
     @staticmethod
     def to_excel(df):
         output = BytesIO()
@@ -289,56 +275,42 @@ class Exporter:
         return output.getvalue()
 
     @staticmethod
-    def to_pdf(df, title="Rohrbuch"):
+    def to_pdf(df):
         if not PDF_AVAILABLE: return b""
         pdf = FPDF(orientation='L', unit='mm', format='A4')
         pdf.add_page()
         pdf.set_font("Arial", 'B', 16)
-        pdf.cell(0, 10, f"{title} - {datetime.now().strftime('%d.%m.%Y')}", 0, 1, 'C')
+        pdf.cell(0, 10, f"Rohrbuch - {datetime.now().strftime('%d.%m.%Y')}", 0, 1, 'C')
         pdf.ln(5)
         
-        # Spalten und Breiten definieren (für Rohrbuch optimiert)
         cols = ["ISO", "Naht", "Datum", "DN", "Bauteil", "Charge", "APZ", "Schweißer"]
         widths = [30, 20, 25, 20, 40, 35, 35, 30]
-        
         pdf.set_font("Arial", 'B', 8)
-        for i, c in enumerate(cols): 
-            pdf.cell(widths[i], 8, c, 1)
+        for i, c in enumerate(cols): pdf.cell(widths[i], 8, c, 1)
         pdf.ln()
         
         pdf.set_font("Arial", size=8)
         export_df = df.drop(columns=['Löschen', 'id'], errors='ignore')
-        
         for _, row in export_df.iterrows():
-            # Robustes Mapping: Sucht Keys case-insensitive
-            def get_val(k):
-                # Versuch exakter Match
+            def g(k): 
                 if k.lower() in row: return str(row[k.lower()])
-                # Versuch spezifische Mappings aus V2
-                if k == "APZ" and 'charge_apz' in row: return str(row['charge_apz'])
-                if k == "ISO" and 'iso' in row: return str(row['iso'])
-                if k == "DN" and 'dimension' in row: return str(row['dimension'])
+                if k=="APZ" and 'charge_apz' in row: return str(row['charge_apz'])
+                if k=="ISO" and 'iso' in row: return str(row['iso'])
+                if k=="DN" and 'dimension' in row: return str(row['dimension'])
                 return ""
-
-            vals = [get_val(c) for c in cols]
-            
-            for i, val in enumerate(vals):
-                try: 
-                    safe_val = val[:20].encode('latin-1','replace').decode('latin-1')
-                    pdf.cell(widths[i], 8, safe_val, 1)
-                except: 
-                    pdf.cell(widths[i], 8, "?", 1)
+            vals = [g(c) for c in cols]
+            for i, v in enumerate(vals):
+                try: pdf.cell(widths[i], 8, v[:20].encode('latin-1','replace').decode('latin-1'), 1)
+                except: pdf.cell(widths[i], 8, "?", 1)
             pdf.ln()
-            
         return pdf.output(dest='S').encode('latin-1')
 
 # -----------------------------------------------------------------------------
-# 4. UI SEITEN (TABS)
+# 4. UI SEITEN
 # -----------------------------------------------------------------------------
 
 def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn: str):
-    """Der Code aus V4.1 (korrigiert)."""
-    st.subheader("🪚 Smarte Säge 5.0")
+    st.subheader("🪚 Smarte Säge 5.1")
     
     # State Healing
     if 'fitting_list' in st.session_state and st.session_state.fitting_list:
@@ -391,7 +363,6 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                     st.session_state.fitting_list = []
                     st.rerun()
 
-            # Calc
             sum_fit = sum(i.total_deduction for i in st.session_state.fitting_list)
             sum_gap = sum(i.count for i in st.session_state.fitting_list) * gap
             sum_gskt = dicht_anz * dicht_thk
@@ -423,7 +394,7 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                 st.rerun()
 
 def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
-    """RESTAURIERTE Geometrie Tools (Stutzen & Bogen)."""
+    """Geometrie Tools inkl. BOGEN MITTE."""
     st.subheader("📐 Geometrie & Schablonen")
     
     t_stutz, t_bogen = st.tabs(["🔥 Stutzen-Schablone", "🔄 Bogen-Rechner"])
@@ -435,39 +406,40 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
         
         if c1.button("Kurve berechnen"):
             try:
-                # Tabelle berechnen
                 df_coords = calc.calculate_stutzen_coords(dn_main, dn_stub)
-                # Plotten
                 fig = Visualizer.plot_stutzen(dn_main, dn_stub, df)
-                
                 c_res1, c_res2 = st.columns([1, 2])
-                with c_res1:
-                    st.table(df_coords)
-                with c_res2:
-                    st.pyplot(fig)
+                with c_res1: st.table(df_coords)
+                with c_res2: st.pyplot(fig)
             except ValueError as e:
                 st.error(str(e))
 
     with t_bogen:
+        st.markdown("#### Bogen Zuschnitt & Kontrolle")
         cb1, cb2 = st.columns(2)
         angle = cb1.slider("Winkel (°)", 0, 90, 45, key="gb_ang")
         dn_b = cb2.selectbox("DN Bogen", df['DN'], index=6, key="gb_dn")
         
-        row = calc.get_row(dn_b)
-        r = float(row['Radius_BA3'])
-        da = float(row['D_Aussen'])
+        # Logik aus Calculator holen (Runde 2: Separation)
+        details = calc.calculate_bend_details(dn_b, angle)
         
-        vorbau = r * math.tan(math.radians(angle/2))
-        bogen_a = (r + da/2) * math.radians(angle)
-        bogen_i = (r - da/2) * math.radians(angle)
+        # Anzeige in logischen Gruppen (Runde 3: Informationsgehalt)
+        st.divider()
+        c_vorbau, c_laengen = st.columns([1, 2])
         
-        st.markdown(f"<div class='info-box'>Vorbau (Z-Maß): <b>{vorbau:.1f} mm</b></div>", unsafe_allow_html=True)
-        cm1, cm2 = st.columns(2)
-        cm1.metric("Bogen Außen (Rücken)", f"{bogen_a:.1f} mm")
-        cm2.metric("Bogen Innen (Bauch)", f"{bogen_i:.1f} mm")
+        with c_vorbau:
+            st.markdown("**Einbaumaß**")
+            st.markdown(f"<div class='info-box'>Vorbau (Z-Maß)<br><b>{details['vorbau']:.1f} mm</b></div>", unsafe_allow_html=True)
+            
+        with c_laengen:
+            st.markdown("**Bogenlängen (Material)**")
+            cm1, cm2, cm3 = st.columns(3)
+            cm1.metric("Außen (Rücken)", f"{details['bogen_aussen']:.1f} mm")
+            # NEU: Bogen Mitte (Runde 1: Funktionalität)
+            cm2.metric("Mitte (Neutral)", f"{details['bogen_mitte']:.1f} mm") 
+            cm3.metric("Innen (Bauch)", f"{details['bogen_innen']:.1f} mm")
 
 def render_logbook(df_pipe: pd.DataFrame):
-    """RESTAURIERTES V2.1 Rohrbuch (Bulk Delete + APZ)."""
     st.subheader("📝 Digitales Rohrbuch")
     
     with st.expander("Eintrag hinzufügen", expanded=True):
@@ -476,14 +448,10 @@ def render_logbook(df_pipe: pd.DataFrame):
             iso = c1.text_input("ISO")
             naht = c2.text_input("Naht")
             dat = c3.date_input("Datum")
-            
             c4, c5, c6 = st.columns(3)
-            # Bereinigte Liste aus V2
-            types = ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Stutzen", "Muffe"]
-            bt = c4.selectbox("Bauteil", types)
+            bt = c4.selectbox("Bauteil", ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Stutzen", "Muffe"])
             dn = c5.selectbox("Dimension", df_pipe['DN'], index=8)
-            ch = c6.text_input("Charge (Rohr/Fitting)")
-            
+            ch = c6.text_input("Charge")
             c7, c8 = st.columns(2)
             apz = c7.text_input("APZ / Zeugnis")
             sch = c8.text_input("Schweißer")
@@ -499,32 +467,23 @@ def render_logbook(df_pipe: pd.DataFrame):
 
     st.divider()
     df = DatabaseRepository.get_all()
-    
     if not df.empty:
-        # Export Buttons
         ce1, ce2, _ = st.columns([1,1,3])
         ce1.download_button("📥 Excel", Exporter.to_excel(df), "rohrbuch.xlsx")
-        if PDF_AVAILABLE:
-            ce2.download_button("📄 PDF", Exporter.to_pdf(df), "rohrbuch.pdf")
+        if PDF_AVAILABLE: ce2.download_button("📄 PDF", Exporter.to_pdf(df), "rohrbuch.pdf")
             
-        # Bulk Delete Editor
-        st.caption("Zum Löschen Checkbox aktivieren und Button unten klicken:")
         edited = st.data_editor(
-            df, 
-            hide_index=True, 
+            df, hide_index=True, use_container_width=True,
             column_config={"Löschen": st.column_config.CheckboxColumn(default=False)},
-            disabled=["id", "iso", "naht", "datum", "dimension", "bauteil", "charge", "charge_apz", "schweisser"],
-            use_container_width=True
+            disabled=["id", "iso", "naht", "datum", "dimension", "bauteil", "charge", "charge_apz", "schweisser"]
         )
-        
         to_del = edited[edited['Löschen'] == True]
         if not to_del.empty:
-            if st.button(f"🗑️ {len(to_del)} Einträge löschen", type="primary"):
+            if st.button(f"🗑️ {len(to_del)} löschen", type="primary"):
                 DatabaseRepository.delete_entries(to_del['id'].tolist())
                 st.rerun()
 
 def render_handbook(calc, dn, pn):
-    """Statisches Tabellenbuch (V1)."""
     row = calc.get_row(dn)
     suffix = "_16" if pn == "PN 16" else "_10"
     st.subheader(f"Tabellenbuch DN {dn}")
