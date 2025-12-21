@@ -21,10 +21,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V6_2")
+logger = logging.getLogger("PipeCraft_Pro_V6_3")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 6.2",
+    page_title="Rohrbau Profi 6.3",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -142,7 +142,7 @@ class FittingItem:
 @dataclass
 class SavedCut:
     id: int
-    name: str           # <--- NEU IN V6.2: Bezeichnung
+    name: str
     raw_length: float
     cut_length: float
     details: str
@@ -330,21 +330,19 @@ class Exporter:
 # -----------------------------------------------------------------------------
 
 def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn: str):
-    st.subheader("🪚 Smarte Säge 6.2")
+    st.subheader("🪚 Smarte Säge 6.3")
     
-    # State Init
+    # Init State
     if 'fitting_list' not in st.session_state: st.session_state.fitting_list = []
     if 'saved_cuts' not in st.session_state: st.session_state.saved_cuts = []
     if 'next_cut_id' not in st.session_state: st.session_state.next_cut_id = 1
 
-    # STATE HEALING V6.2: Falls alte SavedCut Objekte ohne 'name' existieren, Liste resetten
+    # Healing: Check if older SavedCut objects exist
     if st.session_state.saved_cuts:
         try: _ = st.session_state.saved_cuts[0].name
-        except AttributeError: 
-            st.session_state.saved_cuts = []
-            st.toast("System: Schnittliste wurde wegen Versionsupdate zurückgesetzt.", icon="ℹ️")
+        except AttributeError: st.session_state.saved_cuts = []
 
-    # Transfer-Check
+    # Check Transfer from Geometry
     default_raw = 0.0
     if 'transfer_cut_length' in st.session_state:
         default_raw = st.session_state.pop('transfer_cut_length')
@@ -352,13 +350,10 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
 
     c_calc, c_list = st.columns([1.4, 1.6])
 
-    # --- LINKE SPALTE ---
     with c_calc:
         with st.container(border=True):
             st.markdown("#### 1. Neuer Schnitt")
-            # NEU V6.2: Bezeichnung
             cut_name = st.text_input("Bezeichnung / Spool", placeholder="z.B. Strang A - 01", help="Name für die Liste")
-            
             raw_len = st.number_input("Schnittmaß (Roh) [mm]", value=default_raw, min_value=0.0, step=10.0, format="%.1f")
             
             cg1, cg2, cg3 = st.columns(3)
@@ -410,7 +405,6 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                 st.success(f"Sägelänge: {final:.1f} mm")
                 st.caption(f"Abzüge: Teile -{sum_fit:.1f} | Spalte -{sum_gap:.1f} | Dicht. -{sum_gskt:.1f}")
                 
-                # SPEICHERN LOGIK (V6.2 mit Name)
                 if st.button("💾 In Schnittliste speichern", type="primary", use_container_width=True):
                     if raw_len > 0:
                         final_name = cut_name if cut_name.strip() else f"Schnitt #{st.session_state.next_cut_id}"
@@ -427,49 +421,46 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                         st.success("Gespeichert!")
                         st.rerun()
 
-    # --- RECHTE SPALTE: LISTE V6.2 ---
+    # --- RECHTE SPALTE: LISTE V6.3 ---
     with c_list:
         st.markdown("#### 📋 Schnittliste")
         
         if not st.session_state.saved_cuts:
             st.info("Noch keine Schnitte vorhanden.")
         else:
-            data = [asdict(c) for c in st.session_state.saved_cuts]
-            df_s = pd.DataFrame(data)
-            df_s['Löschen'] = False
+            # Custom Rendering für die Liste mit Transfer-Button
+            st.markdown("---")
+            for cut in st.session_state.saved_cuts:
+                col_info, col_res, col_act = st.columns([2, 1.5, 1])
+                
+                with col_info:
+                    st.write(f"**{cut.name}**")
+                    st.caption(f"{cut.details} | {cut.timestamp}")
+                
+                with col_res:
+                    st.markdown(f"✂️ **{cut.cut_length:.1f}**")
+                    st.caption(f"Roh: {cut.raw_length:.0f}")
+                
+                with col_act:
+                    # FEATURE V6.3: Transfer Button
+                    if st.button("📝", key=f"trans_{cut.id}", help="Daten ins Rohrbuch übernehmen"):
+                        st.session_state.logbook_defaults = {
+                            'iso': cut.name,
+                            'len': cut.cut_length
+                        }
+                        st.toast(f"'{cut.name}' ins Rohrbuch kopiert! Bitte Tab wechseln.", icon="📋")
             
-            df_display = df_s[['Löschen', 'name', 'raw_length', 'cut_length', 'details', 'id']]
-
-            # DATA EDITOR MIT CHECKBOXEN
-            edited_df = st.data_editor(
-                df_display,
-                hide_index=True,
-                use_container_width=True,
-                column_config={
-                    "Löschen": st.column_config.CheckboxColumn("🗑️", width="small"),
-                    "name": st.column_config.TextColumn("Bezeichnung", width="medium"),
-                    "raw_length": st.column_config.NumberColumn("Roh", format="%.0f"),
-                    "cut_length": st.column_config.NumberColumn("Säge", format="%.1f", width="medium"),
-                    "details": st.column_config.TextColumn("Info", width="small"),
-                    "id": None 
-                },
-                disabled=["name", "raw_length", "cut_length", "details", "id"], 
-                key="saw_editor"
-            )
-
-            to_delete_ids = edited_df[edited_df['Löschen'] == True]['id'].tolist()
+            st.markdown("---")
             
-            if to_delete_ids:
-                if st.button(f"🗑️ {len(to_delete_ids)} Schnitte löschen", type="primary"):
-                    st.session_state.saved_cuts = [c for c in st.session_state.saved_cuts if c.id not in to_delete_ids]
-                    st.rerun()
-
-            st.divider()
-            if st.button("Alles löschen (Reset)"):
+            # Löschen Verwaltung (Optional noch Data Editor, aber Buttons sind hier besser für den Workflow)
+            if st.button("Alle löschen (Reset Liste)"):
                 st.session_state.saved_cuts = []
                 st.rerun()
                 
-            csv = df_s.drop(columns=['Löschen']).to_csv(sep=";", decimal=",", index=False).encode('utf-8')
+            # CSV
+            data = [asdict(c) for c in st.session_state.saved_cuts]
+            df_s = pd.DataFrame(data)
+            csv = df_s.to_csv(sep=";", decimal=",", index=False).encode('utf-8')
             st.download_button("📥 Liste als CSV", csv, "saegeliste.csv", "text/csv", use_container_width=True)
 
 def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
@@ -555,25 +546,46 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
 
 def render_logbook(df_pipe: pd.DataFrame):
     st.subheader("📝 Digitales Rohrbuch")
+    
+    # FEATURE V6.3: Check for transferred data
+    defaults = st.session_state.get('logbook_defaults', {})
+    def_iso = defaults.get('iso', '')
+    def_len = defaults.get('len', 0.0)
+    
     with st.expander("Eintrag hinzufügen", expanded=True):
         with st.form("lb_new"):
             c1, c2, c3 = st.columns(3)
-            iso = c1.text_input("ISO")
+            # Use transferred values if available
+            iso = c1.text_input("ISO / Bez.", value=def_iso)
             naht = c2.text_input("Naht")
             dat = c3.date_input("Datum")
+            
             c4, c5, c6 = st.columns(3)
-            bt = c4.selectbox("Bauteil", ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Stutzen", "Muffe"])
+            # Set default component if transfer happened
+            def_idx = 0 
+            if def_iso: def_idx = 5 # Set to "Passstück" (index 5 approx) if transfer
+            
+            bt = c4.selectbox("Bauteil", ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Stutzen", "Passstück"], index=def_idx)
             dn = c5.selectbox("Dimension", df_pipe['DN'], index=8)
-            ch = c6.text_input("Charge")
+            
+            # Length input from transfer
+            laenge = 0.0
+            if def_len > 0: laenge = def_len
+            laenge_in = c6.number_input("Länge (mm)", value=float(laenge)) # Explicit float for input
+            
+            ch = st.text_input("Charge")
             c7, c8 = st.columns(2)
             apz = c7.text_input("APZ / Zeugnis")
             sch = c8.text_input("Schweißer")
+            
             if st.form_submit_button("Speichern 💾", type="primary"):
                 DatabaseRepository.add_entry({
                     "iso": iso, "naht": naht, "datum": dat.strftime("%d.%m.%Y"),
-                    "dimension": f"DN {dn}", "bauteil": bt, "laenge": 0,
+                    "dimension": f"DN {dn}", "bauteil": bt, "laenge": laenge_in,
                     "charge": ch, "charge_apz": apz, "schweisser": sch
                 })
+                # Clear defaults after save
+                if 'logbook_defaults' in st.session_state: del st.session_state['logbook_defaults']
                 st.success("Gespeichert")
                 st.rerun()
 
