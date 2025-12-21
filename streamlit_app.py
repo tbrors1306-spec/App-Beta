@@ -24,10 +24,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V7_9")
+logger = logging.getLogger("PipeCraft_Pro_V8_0")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 7.9",
+    page_title="Rohrbau Profi 8.0",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -44,6 +44,13 @@ st.markdown("""
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         margin-bottom: 15px; display: inline-block;
     }
+    /* Kanban Card Styles */
+    div[data-testid="stVerticalBlock"] > div[data-testid="stVerticalBlock"] {
+        /* Generic fix for spacing */
+    }
+    .iso-card-high { border-left: 5px solid #ef4444 !important; }
+    .iso-card-norm { border-left: 5px solid #3b82f6 !important; }
+    
     div[data-testid="stMetric"] {
         background-color: #ffffff;
         border: 1px solid #e2e8f0; border-radius: 8px;
@@ -86,6 +93,7 @@ class DatabaseRepository:
     def init_db():
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
+            # Bestehende Tabellen
             c.execute('''CREATE TABLE IF NOT EXISTS rohrbuch (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, 
                         iso TEXT, naht TEXT, datum TEXT, 
@@ -96,6 +104,19 @@ class DatabaseRepository:
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         name TEXT NOT NULL UNIQUE,
                         created_at TEXT)''')
+            
+            # NEU V8.0: ISO Tracker Tabelle
+            c.execute('''CREATE TABLE IF NOT EXISTS iso_tracker (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        project_id INTEGER,
+                        iso_name TEXT NOT NULL,
+                        status_id INTEGER DEFAULT 0,
+                        revision TEXT DEFAULT '0',
+                        spools INTEGER DEFAULT 1,
+                        priority TEXT DEFAULT 'Normal',
+                        updated_at TEXT)''')
+
+            # Migrationen
             c.execute("PRAGMA table_info(rohrbuch)")
             cols = [info[1] for info in c.fetchall()]
             if 'charge_apz' not in cols:
@@ -104,6 +125,7 @@ class DatabaseRepository:
             if 'project_id' not in cols:
                 try: c.execute("ALTER TABLE rohrbuch ADD COLUMN project_id INTEGER")
                 except: pass
+            
             c.execute("INSERT OR IGNORE INTO projects (id, name, created_at) VALUES (1, 'Standard Baustelle', ?)", 
                       (datetime.now().strftime("%d.%m.%Y"),))
             c.execute("UPDATE rohrbuch SET project_id = 1 WHERE project_id IS NULL")
@@ -162,6 +184,35 @@ class DatabaseRepository:
             rows = conn.cursor().execute(query, (project_id, limit)).fetchall()
             return [r[0] for r in rows]
 
+    # --- ISO TRACKER METHODS V8.0 ---
+    @staticmethod
+    def add_iso(data: dict):
+        with sqlite3.connect(DB_NAME) as conn:
+            c = conn.cursor()
+            c.execute('''INSERT INTO iso_tracker (project_id, iso_name, status_id, revision, spools, priority, updated_at)
+                         VALUES (:project_id, :iso_name, 0, :revision, :spools, :priority, :updated_at)''', data)
+            conn.commit()
+
+    @staticmethod
+    def get_isos_by_project(project_id: int) -> pd.DataFrame:
+        with sqlite3.connect(DB_NAME) as conn:
+            df = pd.read_sql_query("SELECT * FROM iso_tracker WHERE project_id = ? ORDER BY priority DESC, id DESC", conn, params=(project_id,))
+            return df
+
+    @staticmethod
+    def update_iso_status(iso_id: int, new_status: int):
+        with sqlite3.connect(DB_NAME) as conn:
+            c = conn.cursor()
+            c.execute("UPDATE iso_tracker SET status_id = ?, updated_at = ? WHERE id = ?", 
+                      (new_status, datetime.now().strftime("%d.%m.%Y %H:%M"), iso_id))
+            conn.commit()
+
+    @staticmethod
+    def delete_iso(iso_id: int):
+        with sqlite3.connect(DB_NAME) as conn:
+            conn.cursor().execute("DELETE FROM iso_tracker WHERE id = ?", (iso_id,))
+            conn.commit()
+
 # -----------------------------------------------------------------------------
 # 3. HELPER & LOGIK
 # -----------------------------------------------------------------------------
@@ -187,9 +238,11 @@ class SavedCut:
 
 class PipeCalculator:
     def __init__(self, df: pd.DataFrame): self.df = df
+    
     def get_row(self, dn: int) -> pd.Series:
         row = self.df[self.df['DN'] == dn]
         return row.iloc[0] if not row.empty else self.df.iloc[0]
+    
     def get_deduction(self, f_type: str, dn: int, pn: str, angle: float = 90.0) -> float:
         row = self.get_row(dn)
         suffix = "_16" if pn == "PN 16" else "_10"
@@ -199,12 +252,14 @@ class PipeCalculator:
         if "T-Stück" in f_type: return float(row['T_Stueck_H'])
         if "Reduzierung" in f_type: return float(row['Red_Laenge_L'])
         return 0.0
+    
     def calculate_bend_details(self, dn: int, angle: float) -> Dict[str, float]:
         row = self.get_row(dn)
         r = float(row['Radius_BA3'])
         da = float(row['D_Aussen'])
         rad = math.radians(angle)
         return {"vorbau": r * math.tan(rad / 2), "bogen_aussen": (r + da/2) * rad, "bogen_mitte": r * rad, "bogen_innen": (r - da/2) * rad}
+    
     def calculate_stutzen_coords(self, dn_haupt: int, dn_stutzen: int) -> pd.DataFrame:
         r_main = self.get_row(dn_haupt)['D_Aussen'] / 2
         r_stub = self.get_row(dn_stutzen)['D_Aussen'] / 2
@@ -218,6 +273,7 @@ class PipeCalculator:
             u_val = (r_stub * 2 * math.pi) * (angle / 360)
             table_data.append({"Winkel": f"{angle}°", "Tiefe (mm)": round(t_val, 1), "Umfang (mm)": round(u_val, 1)})
         return pd.DataFrame(table_data)
+    
     def calculate_2d_offset(self, dn: int, offset: float, angle: float) -> Dict[str, float]:
         row = self.get_row(dn)
         r = float(row['Radius_BA3'])
@@ -228,6 +284,7 @@ class PipeCalculator:
         except: return {"error": "Winkel 0"}
         z_mass = r * math.tan(rad / 2)
         return {"hypotenuse": hypotenuse, "run": run, "z_mass_single": z_mass, "cut_length": hypotenuse - (2*z_mass), "offset": offset, "angle": angle}
+    
     def calculate_rolling_offset(self, dn: int, roll: float, set_val: float, height: float = 0.0) -> Dict[str, float]:
         diag_base = math.sqrt(roll**2 + set_val**2)
         travel = math.sqrt(diag_base**2 + height**2)
@@ -235,7 +292,6 @@ class PipeCalculator:
         except: required_angle = 0
         return {"travel": travel, "diag_base": diag_base, "angle_calc": required_angle}
     
-    # SEGMENT BOGEN LOGIK (V7.8)
     def calculate_segment_bend(self, dn: int, radius: float, num_segments: int, total_angle: float = 90.0) -> Dict[str, float]:
         row = self.get_row(dn)
         od = float(row['D_Aussen'])
@@ -604,7 +660,6 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
 def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
     st.subheader("📐 Geometrie V7.9 (Restored)")
     
-    # JETZT 5 TABS - BOGEN (STANDARD) IST ZURÜCK
     geo_tabs = st.tabs(["2D Etage (S-Schlag)", "3D Raum-Etage (Rolling)", "Bogen (Standard)", "🦞 Segment-Bogen", "Stutzen"])
     
     # --- 1. 2D ETAGE ---
@@ -745,6 +800,86 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 with c_r1: st.table(df_c)
                 with c_r2: st.pyplot(fig)
             except ValueError as e: st.error(str(e))
+
+# --- ISO TRACKER V8.0 ---
+def render_iso_tracker(active_pid: int, proj_name: str):
+    st.subheader("📋 ISO-Tracker V8.0")
+    st.markdown(f"<div class='project-tag'>📍 Projekt: {proj_name}</div>", unsafe_allow_html=True)
+
+    # Add New ISO Form
+    with st.expander("➕ Neue ISO anlegen", expanded=False):
+        with st.form("new_iso_form"):
+            c1, c2, c3 = st.columns(3)
+            iso_name = c1.text_input("ISO Nummer", placeholder="z.B. ISO-1001")
+            spools = c2.number_input("Anzahl Spools", min_value=1, value=1)
+            prio = c3.selectbox("Priorität", ["Normal", "Hoch"])
+            if st.form_submit_button("Hinzufügen"):
+                if iso_name:
+                    DatabaseRepository.add_iso({
+                        "project_id": active_pid, "iso_name": iso_name, 
+                        "revision": "0", "spools": spools, "priority": prio,
+                        "updated_at": datetime.now().strftime("%d.%m.%Y")
+                    })
+                    st.success("ISO angelegt!")
+                    st.rerun()
+                else:
+                    st.error("Name fehlt.")
+
+    # Status Definitions
+    statuses = {0: "Vorfertigung", 1: "Montage", 2: "Schweißen", 3: "ZfP/Prüfung", 4: "Fertig"}
+    
+    # Load Data
+    df_isos = DatabaseRepository.get_isos_by_project(active_pid)
+    
+    if df_isos.empty:
+        st.info("Keine ISOs in diesem Projekt.")
+        return
+
+    # Metrics
+    total = len(df_isos)
+    done = len(df_isos[df_isos['status_id'] == 4])
+    progress = done / total if total > 0 else 0
+    st.progress(progress, text=f"Gesamtfortschritt: {int(progress*100)}%")
+
+    # Kanban Board
+    cols = st.columns(5)
+    for status_id, status_label in statuses.items():
+        with cols[status_id]:
+            st.markdown(f"**{status_label}**")
+            # Filter ISOs for this column
+            current_isos = df_isos[df_isos['status_id'] == status_id]
+            
+            # Badge for count
+            count = len(current_isos)
+            if count > 10: st.error(f"{count} Stück") # Bottleneck warning
+            else: st.caption(f"{count} Stück")
+
+            for _, iso in current_isos.iterrows():
+                # Card Style based on priority
+                card_style = "iso-card-high" if iso['priority'] == "Hoch" else "iso-card-norm"
+                
+                with st.container(border=True):
+                    # Visual Indicator for Priority
+                    if iso['priority'] == "Hoch": st.markdown("🔴 **HOCH**")
+                    
+                    st.markdown(f"**{iso['iso_name']}**")
+                    st.caption(f"Spools: {iso['spools']} | Rev: {iso['revision']}")
+                    
+                    # Action Buttons
+                    cb1, cb2 = st.columns(2)
+                    if status_id > 0:
+                        if cb1.button("◀️", key=f"prev_{iso['id']}"):
+                            DatabaseRepository.update_iso_status(iso['id'], status_id - 1)
+                            st.rerun()
+                    if status_id < 4:
+                        if cb2.button("▶️", key=f"next_{iso['id']}"):
+                            DatabaseRepository.update_iso_status(iso['id'], status_id + 1)
+                            st.rerun()
+                    
+                    # Delete (Small x)
+                    if st.button("🗑️", key=f"del_iso_{iso['id']}", help="Löschen"):
+                        DatabaseRepository.delete_iso(iso['id'])
+                        st.rerun()
 
 def render_logbook(df_pipe: pd.DataFrame):
     st.subheader("📝 Digitales Rohrbuch (V7.7.1)")
@@ -924,7 +1059,6 @@ def main():
     df_pipe = get_pipe_data()
     calc = PipeCalculator(df_pipe)
 
-    # 1. RENDER SIDEBAR (PROJECTS V7)
     render_sidebar_projects()
 
     with st.sidebar:
@@ -932,12 +1066,14 @@ def main():
         dn = st.selectbox("Nennweite", df_pipe['DN'], index=8)
         pn = st.radio("Druckstufe", ["PN 16", "PN 10"], horizontal=True)
 
-    t1, t2, t3, t4 = st.tabs(["🪚 Smarte Säge", "📐 Geometrie", "📝 Rohrbuch", "📚 Smart Data"])
+    # TABS: ISO Tracker hinzugefügt
+    t1, t2, t3, t4, t5 = st.tabs(["🪚 Smarte Säge", "📐 Geometrie", "📝 Rohrbuch", "📋 ISO-Tracker", "📚 Smart Data"])
     
     with t1: render_smart_saw(calc, df_pipe, dn, pn)
     with t2: render_geometry_tools(calc, df_pipe)
     with t3: render_logbook(df_pipe)
-    with t4: render_tab_handbook(calc, dn, pn)
+    with t4: render_iso_tracker(st.session_state.active_project_id, st.session_state.active_project_name)
+    with t5: render_tab_handbook(calc, dn, pn)
 
 if __name__ == "__main__":
     main()
