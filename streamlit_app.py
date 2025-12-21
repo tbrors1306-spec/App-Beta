@@ -24,10 +24,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V8_1")
+logger = logging.getLogger("PipeCraft_Pro_V9_5")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 8.1",
+    page_title="Rohrbau Profi 9.5",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -255,6 +255,63 @@ class PipeCalculator:
         end_center = radius * tan_alpha
         return {"miter_angle": miter_angle, "mid_back": len_back, "mid_belly": len_belly, "mid_center": len_center, "end_back": end_back, "end_belly": end_belly, "end_center": end_center, "od": od}
 
+class MaterialManager:
+    """NEU V9.5: Logik für Material Take Off (MTO)"""
+    
+    @staticmethod
+    def parse_dn(dim_str: str) -> int:
+        """Extrahiert sauberes DN (int) aus String."""
+        if not dim_str: return 0
+        try:
+            match = re.search(r'\d+', str(dim_str))
+            if match: return int(match.group())
+            return 0
+        except: return 0
+
+    @staticmethod
+    def generate_mto(df_log: pd.DataFrame) -> pd.DataFrame:
+        """Erstellt eine konsolidierte Stückliste aus dem Rohrbuch."""
+        if df_log.empty: return pd.DataFrame()
+        
+        # 1. Daten säubern
+        df = df_log.copy()
+        df['dn_clean'] = df['dimension'].apply(MaterialManager.parse_dn)
+        
+        # 2. Kategorisierung: Meterware vs. Stückware
+        # Bauteile, die als Länge zählen:
+        linear_items = ['Rohrstoß', 'Passstück', 'Rohr']
+        
+        # 3. Logik für Meterware
+        df_linear = df[df['bauteil'].isin(linear_items)].copy()
+        if not df_linear.empty:
+            df_linear['menge'] = pd.to_numeric(df_linear['laenge'], errors='coerce').fillna(0) / 1000.0
+            # Gruppieren nach DN und Bauteil
+            mto_linear = df_linear.groupby(['dn_clean', 'bauteil'])['menge'].sum().reset_index()
+            mto_linear['Einheit'] = 'm'
+        else:
+            mto_linear = pd.DataFrame(columns=['dn_clean', 'bauteil', 'menge', 'Einheit'])
+            
+        # 4. Logik für Stückware (alles andere)
+        df_count = df[~df['bauteil'].isin(linear_items)].copy()
+        if not df_count.empty:
+            # Einfach zählen
+            mto_count = df_count.groupby(['dn_clean', 'bauteil']).size().reset_index(name='menge')
+            mto_count['Einheit'] = 'Stk'
+        else:
+            mto_count = pd.DataFrame(columns=['dn_clean', 'bauteil', 'menge', 'Einheit'])
+            
+        # 5. Zusammenführen
+        mto_final = pd.concat([mto_linear, mto_count], ignore_index=True)
+        
+        # Schön machen
+        mto_final['Dimension'] = mto_final['dn_clean'].apply(lambda x: f"DN {x}")
+        mto_final = mto_final.rename(columns={'bauteil': 'Beschreibung', 'menge': 'Menge'})
+        
+        # Sortieren
+        mto_final = mto_final[['Dimension', 'Beschreibung', 'Menge', 'Einheit']].sort_values(['Dimension', 'Beschreibung'])
+        
+        return mto_final
+
 class HandbookCalculator:
     BOLT_DATA = {"M12": [19, 85, 55], "M16": [24, 210, 135], "M20": [30, 410, 265], "M24": [36, 710, 460], "M27": [41, 1050, 680], "M30": [46, 1420, 920], "M33": [50, 1930, 1250], "M36": [55, 2480, 1600], "M39": [60, 3200, 2080], "M45": [70, 5000, 3250], "M52": [80, 7700, 5000]}
     @staticmethod
@@ -376,7 +433,7 @@ class Exporter:
     @staticmethod
     def to_excel(df):
         output = BytesIO()
-        export_df = df.drop(columns=['Löschen', 'id', 'Auswahl', 'project_id'], errors='ignore')
+        export_df = df.drop(columns=['Löschen', 'id', 'Auswahl', 'project_id', 'dn_clean'], errors='ignore')
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             export_df.to_excel(writer, index=False, sheet_name='Daten')
         return output.getvalue()
@@ -848,6 +905,52 @@ def render_logbook(df_pipe: pd.DataFrame):
     else:
         st.info(f"Keine Einträge für Projekt '{proj_name}' gefunden. Beginne mit der ersten Naht oder importiere aus der Säge.")
 
+# --- V9.5 NEUER TAB: MTO (MATERIAL TAKE OFF) ---
+def render_mto_tab(active_pid: int, proj_name: str):
+    st.subheader("📦 Material Manager (V9.5)")
+    st.markdown(f"<div class='project-tag'>📍 Projekt: {proj_name}</div>", unsafe_allow_html=True)
+
+    # 1. Daten holen
+    df_log = DatabaseRepository.get_logbook_by_project(active_pid)
+    
+    if df_log.empty:
+        st.info("Keine Daten im Rohrbuch. Das Materiallager ist leer.")
+        return
+
+    # 2. Generieren
+    mto_df = MaterialManager.generate_mto(df_log)
+    
+    # 3. Anzeige
+    if not mto_df.empty:
+        # Metriken
+        total_items = len(mto_df)
+        total_meters = mto_df[mto_df['Einheit']=='m']['Menge'].sum()
+        
+        c1, c2 = st.columns(2)
+        c1.metric("Positionen", total_items, "verschiedene Artikel")
+        c2.metric("Verrohrung gesamt", f"{total_meters:.1f} m", "Laufmeter")
+        
+        st.divider()
+        
+        # Download
+        fname = f"MTO_{proj_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        # Quick Excel Export for MTO
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            mto_df.to_excel(writer, index=False, sheet_name='Materialauszug')
+        
+        st.download_button("📥 MTO als Excel herunterladen", output.getvalue(), fname, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+        
+        # Tabelle
+        st.dataframe(mto_df, use_container_width=True, hide_index=True)
+        
+        # Chart (Visual Distribution)
+        # Group by Dimension (Pipe vs Fittings)
+        # Simplified View
+        st.caption("Verteilung nach Dimensionen (Anzahl Positionen)")
+        chart_data = mto_df['Dimension'].value_counts()
+        st.bar_chart(chart_data)
+
 def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
     row = calc.get_row(dn)
     suffix = "_16" if pn == "PN 16" else "_10"
@@ -936,12 +1039,14 @@ def main():
         dn = st.selectbox("Nennweite", df_pipe['DN'], index=8)
         pn = st.radio("Druckstufe", ["PN 16", "PN 10"], horizontal=True)
 
-    t1, t2, t3, t4 = st.tabs(["🪚 Smarte Säge", "📐 Geometrie", "📝 Rohrbuch", "📚 Smart Data"])
+    # TABS: MTO hinzugefügt
+    t1, t2, t3, t4, t5 = st.tabs(["🪚 Smarte Säge", "📐 Geometrie", "📝 Rohrbuch", "📦 Material", "📚 Smart Data"])
     
     with t1: render_smart_saw(calc, df_pipe, dn, pn)
     with t2: render_geometry_tools(calc, df_pipe)
     with t3: render_logbook(df_pipe)
-    with t4: render_tab_handbook(calc, dn, pn)
+    with t4: render_mto_tab(st.session_state.active_project_id, st.session_state.active_project_name)
+    with t5: render_tab_handbook(calc, dn, pn)
 
 if __name__ == "__main__":
     main()
