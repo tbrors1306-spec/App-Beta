@@ -1,13 +1,13 @@
 """
-PipeCraft V44.0 (Pure Engineering & Documentation)
---------------------------------------------------
-Fokus: Technische Berechnung und Schweißnaht-Dokumentation.
-Entfernt: Kommerzielle Kalkulation & Lagerbestände.
-
+PipeCraft V45.0 (Streamlined Edition)
+-------------------------------------
 Features:
-1.  Smart Cut: Sägelisten-Erstellung (inkl. Reduzier-Logik nach DN Groß).
-2.  Engineering: 3D-Etagen, Stutzen-Abwicklung (Tabelle + Plot), Gewichte.
-3.  Rohrbuch: Detaillierte Erfassung mit Export (Excel/PDF).
+1.  Smart Cut: Sägeliste mit Reduzier-Logik (Groß/Klein).
+2.  Bogen: Zuschnittsrechner inkl. Rücken- & Bauchmaß.
+3.  Stutzen: Schablone mit Tabelle & Plot.
+4.  Rohrbuch: Detaillierte Erfassung & Export.
+
+REMOVED: Kalkulation, Lager, Gewicht, Etage.
 
 Author: Senior Lead Software Engineer
 """
@@ -16,14 +16,11 @@ import streamlit as st
 import pandas as pd
 import math
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from mpl_toolkits.mplot3d import Axes3D 
 import sqlite3
 import logging
 from dataclasses import dataclass
-from datetime import datetime
 from io import BytesIO
-from typing import List, Tuple, Any, Optional, Union
+from typing import List, Optional
 
 # -----------------------------------------------------------------------------
 # 0. SYSTEM CONFIGURATION
@@ -39,7 +36,7 @@ except ImportError:
     PDF_AVAILABLE = False
 
 st.set_page_config(
-    page_title="PipeCraft V44.0",
+    page_title="PipeCraft V45.0",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -65,12 +62,6 @@ st.markdown("""
     .detail-box { 
         background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 15px; 
         border-radius: 8px; text-align: center; font-size: 0.9rem; color: #334155; 
-    }
-    
-    .weight-box { 
-        background-color: #fff1f2; border: 1px solid #fecdd3; color: #be123c; 
-        padding: 15px; border-radius: 8px; text-align: center; font-weight: bold; 
-        margin-top: 15px; 
     }
     
     .stNumberInput input, .stSelectbox div[data-baseweb="select"] { 
@@ -114,19 +105,27 @@ except ValueError as e:
     st.error(f"Datenbankfehler: {e}")
     st.stop()
 
-SCHRAUBEN_DB = { "M12": [18, 60], "M16": [24, 130], "M20": [30, 250], "M24": [36, 420], "M27": [41, 600], "M30": [46, 830], "M33": [50, 1100], "M36": [55, 1400], "M39": [60, 1800], "M45": [70, 2700], "M52": [80, 4200] }
-WS_STD_MAP = {25: 3.2, 32: 3.6, 40: 3.6, 50: 3.9, 65: 5.2, 80: 5.5, 100: 6.0, 125: 6.6, 150: 7.1, 200: 8.2, 250: 9.3, 300: 9.5, 350: 9.5, 400: 9.5, 450: 9.5, 500: 9.5}
-DB_NAME = "pipecraft_v44.db"
+SCHRAUBEN_DB = { 
+    "M12": [18, 60], "M16": [24, 130], "M20": [30, 250], 
+    "M24": [36, 420], "M27": [41, 600], "M30": [46, 830], 
+    "M33": [50, 1100], "M36": [55, 1400], "M39": [60, 1800], 
+    "M45": [70, 2700], "M52": [80, 4200] 
+}
+
+DB_NAME = "pipecraft_v45.db"
 
 # -----------------------------------------------------------------------------
 # 2. LOGIC LAYER
 # -----------------------------------------------------------------------------
 
 def get_row_by_dn(dn: int) -> pd.Series:
-    try: return df_pipe[df_pipe['DN'] == dn].iloc[0]
-    except: return df_pipe.iloc[0]
+    try:
+        return df_pipe[df_pipe['DN'] == dn].iloc[0]
+    except IndexError:
+        return df_pipe.iloc[0]
 
-def get_schrauben_info(gewinde): return SCHRAUBEN_DB.get(gewinde, ["?", "?"])
+def get_schrauben_info(gewinde: str) -> List[Union[int, str]]:
+    return SCHRAUBEN_DB.get(gewinde, ["?", "?"])
 
 # --- SMART CUT MANAGER ---
 @dataclass
@@ -140,54 +139,27 @@ class FittingManager:
     @staticmethod
     def get_deduction(type_name: str, dn_target: int, pn_suffix: str = "_16", custom_angle: float = 45.0) -> float:
         row_data = get_row_by_dn(dn_target)
-        if type_name == "Bogen 90° (BA3)": return float(row_data['Radius_BA3'])
-        elif type_name == "Bogen (Zuschnitt)": return float(row_data['Radius_BA3']) * math.tan(math.radians(custom_angle / 2))
-        elif type_name == "Flansch (Vorschweiß)": return float(row_data[f'Flansch_b{pn_suffix}'])
-        elif type_name == "T-Stück": return float(row_data['T_Stueck_H'])
-        elif "Reduzierung" in type_name: return float(row_data['Red_Laenge_L'])
+        if type_name == "Bogen 90° (BA3)":
+            return float(row_data['Radius_BA3'])
+        elif type_name == "Bogen (Zuschnitt)":
+            return float(row_data['Radius_BA3']) * math.tan(math.radians(custom_angle / 2))
+        elif type_name == "Flansch (Vorschweiß)":
+            return float(row_data[f'Flansch_b{pn_suffix}'])
+        elif type_name == "T-Stück":
+            return float(row_data['T_Stueck_H'])
+        elif "Reduzierung" in type_name:
+            return float(row_data['Red_Laenge_L'])
         return 0.0
 
-# --- PHYSICS ---
-class PhysicsEngine:
-    DENSITY_STEEL = 7.85
-    DENSITY_CEMENT = 2.40
-    @staticmethod
-    def calculate_pipe_weight(dn_idx, ws, length_mm, is_zme=False):
-        try:
-            da = df_pipe.iloc[dn_idx]['D_Aussen']; length_dm = length_mm / 100.0; ra = (da/2)/100.0; ri = ra - (ws/100.0)
-            vol = math.pi * (ra**2 - ri**2) * length_dm; w = vol * 7.85
-            if is_zme:
-                dn = df_pipe.iloc[dn_idx]['DN']; cem = 0.6 if dn < 300 else (0.9 if dn < 600 else 1.2)
-                ric = ri - (cem/100.0)
-                if ric > 0: w += (math.pi * (ri**2 - ric**2) * length_dm) * 2.4
-            return round(w, 1)
-        except: return 0.0
-
 # --- VISUALIZATION ---
-class GeometryEngine:
-    @staticmethod
-    def solve_offset_3d(h, l, b):
-        travel = math.sqrt(h**2 + l**2 + b**2); spread = math.sqrt(l**2 + b**2)
-        angle = 90.0 if spread == 0 else math.degrees(math.atan(h / spread))
-        return travel, angle
-
 class Visualizer:
-    @staticmethod
-    def plot_true_3d_pipe(l, b, h, az, el):
-        fig = plt.figure(figsize=(6, 5)); ax = fig.add_subplot(111, projection='3d')
-        ax.plot([0, l], [0, b], [0, h], color='#ef4444', linewidth=5)
-        ax.plot([0, l], [0, 0], [0, 0], 'k--', alpha=0.2); ax.plot([l, l], [0, b], [0, 0], 'k--', alpha=0.2)
-        ax.plot([0, l], [b, b], [0, 0], 'k--', alpha=0.1); ax.plot([l, l], [b, b], [0, h], 'k--', alpha=0.3)
-        m = max(abs(l), abs(b), abs(h)) or 100
-        ax.set_xlim(0, m); ax.set_ylim(0, m); ax.set_zlim(0, m)
-        ax.view_init(elev=el, azim=az)
-        return fig
-
     @staticmethod
     def plot_stutzen_curve(r_haupt, r_stutzen):
         angles = range(0, 361, 5)
-        try: depths = [r_haupt - math.sqrt(r_haupt**2 - (r_stutzen * math.sin(math.radians(a)))**2) for a in angles]
-        except: return plt.figure()
+        try:
+            depths = [r_haupt - math.sqrt(r_haupt**2 - (r_stutzen * math.sin(math.radians(a)))**2) for a in angles]
+        except:
+            return plt.figure()
         fig, ax = plt.subplots(figsize=(8, 1.2))
         ax.plot(angles, depths, color='#3b82f6', linewidth=2)
         ax.fill_between(angles, depths, color='#eff6ff', alpha=0.5)
@@ -201,7 +173,6 @@ class DatabaseRepository:
     def init_tables():
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
-            # NUR ROHRBUCH, KEINE KALKULATION
             c.execute('''CREATE TABLE IF NOT EXISTS rohrbuch (id INTEGER PRIMARY KEY AUTOINCREMENT, iso TEXT, naht TEXT, datum TEXT, dimension TEXT, bauteil TEXT, laenge REAL, charge TEXT, schweisser TEXT)''')
             conn.commit()
 
@@ -225,12 +196,15 @@ class DatabaseRepository:
 # --- EXPORT ---
 def export_excel(df):
     out = BytesIO()
-    with pd.ExcelWriter(out, engine='openpyxl') as writer: df.to_excel(writer, index=False)
+    with pd.ExcelWriter(out, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False)
     return out.getvalue()
 
 def export_pdf(df):
     if not PDF_AVAILABLE: return b""
-    pdf = FPDF(); pdf.add_page(); pdf.set_font("Arial", size=10)
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=10)
     pdf.cell(0, 10, "Rohrbuch Report", 0, 1, 'C'); pdf.ln(5)
     for _, r in df.iterrows():
         try:
@@ -247,12 +221,16 @@ if 'fitting_list' not in st.session_state:
 
 if 'store' not in st.session_state:
     st.session_state.store = {
-        'saw_mass': 1000.0, 'saw_gap': 4.0, 'saw_zme': False,
-        'view_azim': 45, 'view_elev': 30
+        'saw_mass': 1000.0, 
+        'saw_gap': 4.0, 
+        'bogen_winkel': 45
     }
 
-def save_val(key): st.session_state.store[key] = st.session_state[f"_{key}"]
-def get_val(key): return st.session_state.store.get(key)
+def save_val(key):
+    st.session_state.store[key] = st.session_state[f"_{key}"]
+
+def get_val(key):
+    return st.session_state.store.get(key)
 
 # -----------------------------------------------------------------------------
 # UI IMPLEMENTATION
@@ -267,7 +245,7 @@ row = get_row_by_dn(selected_dn_global)
 standard_radius = float(row['Radius_BA3'])
 suffix = "_16" if selected_pn == "PN 16" else "_10"
 
-st.title("PipeCraft V44.0")
+st.title("PipeCraft V45.0")
 st.caption(f"🔧 Engineering Suite: DN {selected_dn_global} | {selected_pn} | Radius: {standard_radius} mm")
 
 # Nur 3 Tabs: Buch, Werkstatt, Rohrbuch
@@ -292,7 +270,8 @@ with tab_buch:
 
 # TAB 2: WERKSTATT
 with tab_werk:
-    tool_mode = st.radio("Werkzeug:", ["📏 Säge (Smart Cut)", "🔄 Bogen", "🔥 Stutzen", "📐 Etage"], horizontal=True, label_visibility="collapsed")
+    # WICHTIG: Etage wurde entfernt
+    tool_mode = st.radio("Werkzeug:", ["📏 Säge (Smart Cut)", "🔄 Bogen", "🔥 Stutzen"], horizontal=True, label_visibility="collapsed")
     st.divider()
     
     if "Säge" in tool_mode:
@@ -344,15 +323,37 @@ with tab_werk:
             c_res1, c_res2 = st.columns(2)
             c_res1.markdown(f"<div class='result-card-green'>Sägelänge: {round(final, 1)} mm</div>", unsafe_allow_html=True)
             c_res2.info(f"Abzüge: {round(total_deduct, 1)} mm (Teile) + {round(total_gaps*spalt, 1)} mm (Spalte)")
-            dn_idx = df_pipe[df_pipe['DN'] == selected_dn_global].index[0]
-            c_zme = st.checkbox("ZME?", value=get_val('saw_zme'), key="_saw_zme", on_change=save_val, args=('saw_zme',))
-            kg = PhysicsEngine.calculate_pipe_weight(dn_idx, WS_STD_MAP.get(selected_dn_global, 4.0), final, c_zme)
-            st.markdown(f"<div class='weight-box'>⚖️ Gewicht: ~ {kg} kg</div>", unsafe_allow_html=True)
+            # WICHTIG: Gewichtsberechnung entfernt
 
     elif "Bogen" in tool_mode:
+        st.subheader("Bogen Zuschnitt (Detail)")
+        
         angle = st.slider("Winkel", 0, 90, 45, key="bogen_winkel")
-        v = round(standard_radius * math.tan(math.radians(angle/2)), 1)
-        st.markdown(f"<div class='result-card-green'>Vorbau: {v} mm</div>", unsafe_allow_html=True)
+        
+        # Geometrie
+        # Radius ist Mitte Rohr
+        radius_m = standard_radius
+        da = row['D_Aussen']
+        
+        # Außenradius (Rücken) = R + (Da/2)
+        # Innenradius (Bauch)  = R - (Da/2)
+        ra = radius_m + (da/2)
+        ri = radius_m - (da/2)
+        
+        # Bogenlänge = Radius * Winkel(rad)
+        len_m = round(radius_m * math.radians(angle), 1)
+        len_a = round(ra * math.radians(angle), 1)
+        len_i = round(ri * math.radians(angle), 1)
+        
+        # Vorbau (Stichmaß) = R * tan(alpha/2)
+        vorbau = round(radius_m * math.tan(math.radians(angle/2)), 1)
+        
+        st.markdown(f"<div class='result-card-green'>Vorbau: {vorbau} mm</div>", unsafe_allow_html=True)
+        
+        c_b1, c_b2, c_b3 = st.columns(3)
+        c_b1.metric("Rücken (Außen)", f"{len_a} mm")
+        c_b2.metric("Mitte (Neutral)", f"{len_m} mm")
+        c_b3.metric("Bauch (Innen)", f"{len_i} mm")
 
     elif "Stutzen" in tool_mode:
         st.subheader("Stutzen Schablone")
@@ -372,31 +373,6 @@ with tab_werk:
             with c_tab: st.table(pd.DataFrame(table_data))
             with c_plot: st.pyplot(Visualizer.plot_stutzen_curve(rg, rk))
 
-    elif "Etage" in tool_mode:
-        et_type = st.radio("Typ", ["2D", "Kastenmaß", "Fix-Winkel"], horizontal=True)
-        c_c, c_v = st.columns([1, 1.5])
-        with c_v:
-            az = st.slider("H", 0, 360, get_val('view_azim'), key="_view_azim", on_change=save_val, args=('view_azim',))
-            el = st.slider("V", 0, 90, get_val('view_elev'), key="_view_elev", on_change=save_val, args=('view_elev',))
-        with c_c:
-            if et_type == "2D":
-                h = st.number_input("H", value=300); l = st.number_input("L", value=400)
-                t, a = GeometryEngine.solve_offset_3d(h, l, 0)
-                st.markdown(f"<div class='result-card-green'>Säge: {round(t, 1)} mm</div>", unsafe_allow_html=True)
-                st.pyplot(Visualizer.plot_true_3d_pipe(l, 0, h, az, el))
-            elif et_type == "Kastenmaß":
-                b = st.number_input("B", value=200); h = st.number_input("H", value=300); l = st.number_input("L", value=400)
-                t, a = GeometryEngine.solve_offset_3d(h, l, b)
-                st.markdown(f"<div class='result-card-green'>Säge: {round(t, 1)} mm</div>", unsafe_allow_html=True)
-                st.pyplot(Visualizer.plot_true_3d_pipe(l, b, h, az, el))
-            else:
-                b = st.number_input("B", value=200); h = st.number_input("H", value=300); w = st.selectbox("Winkel", [30, 45, 60])
-                s = math.sqrt(b**2 + h**2); l_req = s / math.tan(math.radians(w))
-                t = math.sqrt(l_req**2 + s**2)
-                st.info(f"L nötig: {round(l_req, 1)} mm")
-                st.markdown(f"<div class='result-card-green'>Säge: {round(t, 1)} mm</div>", unsafe_allow_html=True)
-                st.pyplot(Visualizer.plot_true_3d_pipe(l_req, b, h, az, el))
-
 # TAB 3: ROHRBUCH
 with tab_proj:
     st.subheader("Digitales Rohrbuch")
@@ -404,7 +380,7 @@ with tab_proj:
         c1, c2, c3 = st.columns(3); iso = c1.text_input("ISO"); naht = c2.text_input("Naht"); datum = c3.date_input("Datum")
         c4, c5 = st.columns(2); dn_s = c4.selectbox("DN", df_pipe['DN']); len_s = c5.number_input("Länge", value=0)
         
-        # UPGRADED BAUTEIL SELECTOR (DETAILED)
+        # DETAILLIERTE BAUTEIL LISTE
         c_bt = st.columns(1)[0]
         fitting_types_detailed = ["Rohr", "Bogen 90° (BA3)", "Bogen (Zuschnitt)", "Flansch (Vorschweiß)", "T-Stück", "Reduzierung (konz.)", "Muffe", "Nippel"]
         bauteil = c_bt.selectbox("Bauteil / Formteil", fitting_types_detailed)
