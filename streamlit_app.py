@@ -35,25 +35,18 @@ st.markdown("""
     .main { background-color: #f8f9fa; }
     h1, h2, h3 { color: #1e293b; font-family: 'Segoe UI', sans-serif; }
     
-    /* Project Badge Style */
-    .project-badge {
-        background-color: #e0f2fe;
-        color: #0369a1;
-        padding: 5px 10px;
-        border-radius: 12px;
-        font-size: 0.8rem;
-        font-weight: bold;
-        border: 1px solid #7dd3fc;
-        margin-bottom: 10px;
-        display: inline-block;
+    /* Project Badge */
+    .project-tag {
+        background-color: #e0f2fe; color: #0284c7;
+        padding: 4px 8px; border-radius: 4px;
+        font-weight: bold; font-size: 0.8em;
+        border: 1px solid #bae6fd; margin-bottom: 10px; display: inline-block;
     }
 
     div[data-testid="stMetric"] {
         background-color: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        padding: 10px;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        border: 1px solid #e2e8f0; border-radius: 8px;
+        padding: 10px; box-shadow: 0 1px 2px rgba(0,0,0,0.05);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -89,69 +82,71 @@ def get_pipe_data() -> pd.DataFrame:
 DB_NAME = "rohrbau_profi.db"
 
 class DatabaseRepository:
-    """Verwaltet Datenbankoperationen (V7.0 mit Projekten)."""
+    """Verwaltet Datenbankoperationen (V7.0 mit Projekt-Support)."""
     
     @staticmethod
     def init_db():
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
             
-            # 1. Haupttabelle Rohrbuch (falls noch nicht da)
+            # 1. Haupttabelle Rohrbuch
             c.execute('''CREATE TABLE IF NOT EXISTS rohrbuch (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, 
                         iso TEXT, naht TEXT, datum TEXT, 
                         dimension TEXT, bauteil TEXT, laenge REAL, 
-                        charge TEXT, charge_apz TEXT, schweisser TEXT)''')
+                        charge TEXT, charge_apz TEXT, schweisser TEXT,
+                        project_id INTEGER)''') # V7: project_id direkt im Create
             
-            # 2. Migration: Prüfen auf Spalten
-            c.execute("PRAGMA table_info(rohrbuch)")
-            cols = [info[1] for info in c.fetchall()]
-            
-            if 'charge_apz' not in cols:
-                try: c.execute("ALTER TABLE rohrbuch ADD COLUMN charge_apz TEXT")
-                except: pass
-                
-            # V7.0 NEU: project_id Spalte
-            if 'project_id' not in cols:
-                try: c.execute("ALTER TABLE rohrbuch ADD COLUMN project_id INTEGER")
-                except: pass
-
-            # 3. Neue Tabelle: Projekte (V7.0)
+            # 2. Projekt Tabelle (NEU V7)
             c.execute('''CREATE TABLE IF NOT EXISTS projects (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         name TEXT NOT NULL UNIQUE,
-                        created_at TEXT,
-                        status TEXT DEFAULT 'Aktiv')''')
+                        created_at TEXT)''')
             
-            # Default-Projekt anlegen falls DB leer
+            # 3. MIGRATION & HEALING
+            c.execute("PRAGMA table_info(rohrbuch)")
+            cols = [info[1] for info in c.fetchall()]
+            
+            # Nachrüsten: APZ
+            if 'charge_apz' not in cols:
+                try: c.execute("ALTER TABLE rohrbuch ADD COLUMN charge_apz TEXT")
+                except: pass
+            
+            # Nachrüsten: project_id
+            if 'project_id' not in cols:
+                try: c.execute("ALTER TABLE rohrbuch ADD COLUMN project_id INTEGER")
+                except: pass
+            
+            # 4. Standard-Projekt anlegen & Alte Daten retten
             c.execute("SELECT count(*) FROM projects")
             if c.fetchone()[0] == 0:
-                c.execute("INSERT INTO projects (name, created_at) VALUES (?, ?)", ("Standard Projekt", datetime.now().strftime("%d.%m.%Y")))
+                # Default Projekt
+                c.execute("INSERT INTO projects (name, created_at) VALUES (?, ?)", ("Standard Baustelle", datetime.now().strftime("%d.%m.%Y")))
+                # Alte Rohrbuch Einträge (wo project_id NULL ist) auf ID 1 setzen
+                c.execute("UPDATE rohrbuch SET project_id = 1 WHERE project_id IS NULL")
                 
             conn.commit()
 
-    # --- PROJEKT METHODEN ---
+    @staticmethod
+    def get_projects() -> List[tuple]:
+        """Holt Liste aller Projekte: (id, name)."""
+        with sqlite3.connect(DB_NAME) as conn:
+            return conn.cursor().execute("SELECT id, name FROM projects ORDER BY id ASC").fetchall()
+
     @staticmethod
     def create_project(name: str):
         try:
             with sqlite3.connect(DB_NAME) as conn:
                 conn.cursor().execute("INSERT INTO projects (name, created_at) VALUES (?, ?)", (name, datetime.now().strftime("%d.%m.%Y")))
                 conn.commit()
-            return True, "Projekt erstellt."
+            return True, "Projekt erstellt"
         except sqlite3.IntegrityError:
-            return False, "Name existiert bereits."
+            return False, "Name existiert bereits"
 
-    @staticmethod
-    def get_projects() -> List[tuple]:
-        with sqlite3.connect(DB_NAME) as conn:
-            return conn.cursor().execute("SELECT id, name FROM projects ORDER BY id DESC").fetchall()
-
-    # --- ROHRBUCH METHODEN (V7.0: noch ohne Filter, aber bereit) ---
     @staticmethod
     def add_entry(data: dict):
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
-            # V7.0: project_id wird mitgespeichert
             c.execute('''INSERT INTO rohrbuch 
                          (iso, naht, datum, dimension, bauteil, laenge, charge, charge_apz, schweisser, project_id) 
                          VALUES (:iso, :naht, :datum, :dimension, :bauteil, :laenge, :charge, :charge_apz, :schweisser, :project_id)''', 
@@ -159,10 +154,10 @@ class DatabaseRepository:
             conn.commit()
 
     @staticmethod
-    def get_all() -> pd.DataFrame:
+    def get_logbook_by_project(project_id: int) -> pd.DataFrame:
+        """NEU V7: Filtert Rohrbuch nach Projekt."""
         with sqlite3.connect(DB_NAME) as conn:
-            # Hier fehlt noch der Filter (kommt in V7.1)
-            df = pd.read_sql_query("SELECT * FROM rohrbuch ORDER BY id DESC", conn)
+            df = pd.read_sql_query("SELECT * FROM rohrbuch WHERE project_id = ? ORDER BY id DESC", conn, params=(project_id,))
             if not df.empty: df['Löschen'] = False 
             else: 
                 df = pd.DataFrame(columns=["id", "iso", "naht", "datum", "dimension", "bauteil", "laenge", "charge", "charge_apz", "schweisser", "project_id", "Löschen"])
@@ -406,9 +401,66 @@ class Exporter:
 # 4. UI SEITEN (TABS)
 # -----------------------------------------------------------------------------
 
+def render_sidebar_projects():
+    """V7.0: Projekt Manager in Sidebar"""
+    st.sidebar.title("🏗️ Projekt")
+    
+    # Init: Hole Projektliste aus DB
+    projects = DatabaseRepository.get_projects() # [(id, name), ...]
+    
+    # State handling für aktives Projekt
+    if 'active_project_id' not in st.session_state:
+        # Default: Erstes Projekt (Standard)
+        if projects:
+            st.session_state.active_project_id = projects[0][0]
+            st.session_state.active_project_name = projects[0][1]
+    
+    # Projekt Auswahl Box
+    project_names = [p[1] for p in projects]
+    current_idx = 0
+    # Finde Index des aktiven Projekts
+    for i, p in enumerate(projects):
+        if p[0] == st.session_state.get('active_project_id'):
+            current_idx = i
+            break
+            
+    selected_name = st.sidebar.selectbox("Aktive Baustelle:", project_names, index=current_idx)
+    
+    # Logic: Wenn sich Auswahl ändert
+    # 1. Update ID
+    # 2. Reset Sägeliste (Verhindert Daten-Leck zwischen Projekten)
+    
+    new_id = [p[0] for p in projects if p[1] == selected_name][0]
+    
+    if new_id != st.session_state.active_project_id:
+        st.session_state.active_project_id = new_id
+        st.session_state.active_project_name = selected_name
+        # SECURITY CLEAR: Leere Sägeliste bei Projektwechsel
+        st.session_state.saved_cuts = [] 
+        st.session_state.fitting_list = []
+        st.rerun()
+
+    # Neues Projekt erstellen
+    with st.sidebar.expander("➕ Neues Projekt"):
+        new_proj = st.text_input("Name", placeholder="z.B. Halle 4")
+        if st.button("Erstellen"):
+            if new_proj:
+                ok, msg = DatabaseRepository.create_project(new_proj)
+                if ok: 
+                    st.success(msg)
+                    st.rerun()
+                else: 
+                    st.error(msg)
+
+    st.sidebar.divider()
+
 def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn: str):
     st.subheader("🪚 Smarte Säge 6.4")
     
+    # Visual Feedback welches Projekt aktiv ist
+    proj_name = st.session_state.get('active_project_name', 'Unbekannt')
+    st.markdown(f"<div class='project-tag'>📍 Projekt: {proj_name}</div>", unsafe_allow_html=True)
+
     if 'fitting_list' not in st.session_state: st.session_state.fitting_list = []
     if 'saved_cuts' not in st.session_state: st.session_state.saved_cuts = []
     if 'next_cut_id' not in st.session_state: st.session_state.next_cut_id = 1
@@ -434,15 +486,12 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
             gap = cg1.number_input("Spalt (mm)", value=3.0, step=0.5)
             dicht_anz = cg2.number_input("Dichtungen", 0, 5, 0)
             dicht_thk = cg3.number_input("Dicke (mm)", 0.0, 5.0, 2.0, disabled=(dicht_anz==0))
-            
             st.divider()
-            
             st.caption("Bauteil-Abzüge:")
             ca1, ca2, ca3, ca4 = st.columns([2, 1.5, 1, 1])
             f_type = ca1.selectbox("Typ", ["Bogen 90° (BA3)", "Bogen (Zuschnitt)", "Flansch (Vorschweiß)", "T-Stück", "Reduzierung"], label_visibility="collapsed")
             f_dn = ca2.selectbox("DN", df['DN'], index=df['DN'].tolist().index(current_dn), label_visibility="collapsed")
             f_cnt = ca3.number_input("Anz.", 1, 10, 1, label_visibility="collapsed")
-            
             f_ang = 90.0
             if "Zuschnitt" in f_type: f_ang = st.slider("Winkel", 0, 90, 45)
 
@@ -473,23 +522,14 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
             final = raw_len - total
 
             st.divider()
-            if final < 0:
-                st.error(f"Negativmaß! ({final:.1f} mm)")
+            if final < 0: st.error(f"Negativmaß! ({final:.1f} mm)")
             else:
                 st.success(f"Sägelänge: {final:.1f} mm")
                 st.caption(f"Abzüge: Teile -{sum_fit:.1f} | Spalte -{sum_gap:.1f} | Dicht. -{sum_gskt:.1f}")
-                
                 if st.button("💾 In Schnittliste speichern", type="primary", use_container_width=True):
                     if raw_len > 0:
                         final_name = cut_name if cut_name.strip() else f"Schnitt #{st.session_state.next_cut_id}"
-                        st.session_state.saved_cuts.append(SavedCut(
-                            id=st.session_state.next_cut_id,
-                            name=final_name, 
-                            raw_length=raw_len, 
-                            cut_length=final, 
-                            details=f"{len(st.session_state.fitting_list)} Teile", 
-                            timestamp=datetime.now().strftime("%H:%M")
-                        ))
+                        st.session_state.saved_cuts.append(SavedCut(st.session_state.next_cut_id, final_name, raw_len, final, f"{len(st.session_state.fitting_list)} Teile", datetime.now().strftime("%H:%M")))
                         st.session_state.next_cut_id += 1
                         st.session_state.fitting_list = [] 
                         st.success("Gespeichert!")
@@ -497,51 +537,31 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
 
     with c_list:
         st.markdown("#### 📋 Schnittliste & Export")
-        
         if not st.session_state.saved_cuts:
             st.info("Noch keine Schnitte vorhanden.")
         else:
             data = [asdict(c) for c in st.session_state.saved_cuts]
             df_s = pd.DataFrame(data)
             df_s['Auswahl'] = False
-            
             df_display = df_s[['Auswahl', 'name', 'raw_length', 'cut_length', 'details', 'id']]
-
             edited_df = st.data_editor(
-                df_display,
-                hide_index=True,
-                use_container_width=True,
-                column_config={
-                    "Auswahl": st.column_config.CheckboxColumn("☑️", width="small"),
-                    "name": st.column_config.TextColumn("Bez.", width="medium"),
-                    "raw_length": st.column_config.NumberColumn("Roh", format="%.0f"),
-                    "cut_length": st.column_config.NumberColumn("Säge", format="%.1f", width="medium"),
-                    "details": st.column_config.TextColumn("Info", width="small"),
-                    "id": None 
-                },
-                disabled=["name", "raw_length", "cut_length", "details", "id"],
-                key="saw_editor_v64"
+                df_display, hide_index=True, use_container_width=True,
+                column_config={"Auswahl": st.column_config.CheckboxColumn("☑️", width="small"), "name": st.column_config.TextColumn("Bez.", width="medium"), "raw_length": st.column_config.NumberColumn("Roh", format="%.0f"), "cut_length": st.column_config.NumberColumn("Säge", format="%.1f", width="medium"), "details": st.column_config.TextColumn("Info", width="small"), "id": None},
+                disabled=["name", "raw_length", "cut_length", "details", "id"], key="saw_editor_v64"
             )
-
             selected_rows = edited_df[edited_df['Auswahl'] == True]
             selected_ids = selected_rows['id'].tolist()
-            
             if selected_ids:
                 st.info(f"{len(selected_ids)} Element(e) ausgewählt:")
                 col_del, col_trans = st.columns(2)
-                
                 if col_del.button(f"🗑️ Löschen", type="primary", use_container_width=True):
                     st.session_state.saved_cuts = [c for c in st.session_state.saved_cuts if c.id not in selected_ids]
                     st.rerun()
-                
                 if col_trans.button(f"📝 Ins Rohrbuch", help="Kopiert ersten gewählten Schnitt ins Rohrbuch", use_container_width=True):
                     first_id = selected_ids[0]
                     cut_to_transfer = next((c for c in st.session_state.saved_cuts if c.id == first_id), None)
                     if cut_to_transfer:
-                        st.session_state.logbook_defaults = {
-                            'iso': cut_to_transfer.name,
-                            'len': cut_to_transfer.cut_length
-                        }
+                        st.session_state.logbook_defaults = {'iso': cut_to_transfer.name, 'len': cut_to_transfer.cut_length}
                         st.toast(f"'{cut_to_transfer.name}' kopiert! Bitte Tab wechseln.", icon="📋")
 
             st.divider()
@@ -551,7 +571,6 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
             if PDF_AVAILABLE:
                 pdf_data = Exporter.to_pdf_sawlist(df_s)
                 ce2.download_button("📄 PDF", pdf_data, "saegeliste.pdf", use_container_width=True)
-            
             if st.button("Alles Reset (Liste leeren)"):
                 st.session_state.saved_cuts = []
                 st.rerun()
@@ -577,9 +596,9 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 else:
                     st.markdown("#### Ergebnis")
                     m1, m2 = st.columns(2)
-                    m1.metric("Zuschnitt", f"{res['cut_length']:.1f} mm")
+                    m1.metric("Zuschnitt (Rohr)", f"{res['cut_length']:.1f} mm")
                     m2.metric("Etagenlänge", f"{res['hypotenuse']:.1f} mm")
-                    st.info(f"* Z-Maß: {res['z_mass_single']:.1f} mm\n* Versprung: {res['offset']:.1f} mm")
+                    st.info(f"* Abzug pro Bogen (Z): {res['z_mass_single']:.1f} mm\n* Versprung (H): {res['offset']:.1f} mm")
                     if st.button("➡️ Maß an Säge senden"):
                         st.session_state.transfer_cut_length = res['cut_length']
                         st.info("Wert kopiert!")
@@ -634,8 +653,13 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
             except ValueError as e: st.error(str(e))
 
 def render_logbook(df_pipe: pd.DataFrame):
-    st.subheader("📝 Digitales Rohrbuch")
+    st.subheader("📝 Digitales Rohrbuch (V7.0)")
     
+    # Anzeige aktives Projekt
+    proj_name = st.session_state.get('active_project_name', 'Unbekannt')
+    active_pid = st.session_state.get('active_project_id', 1)
+    st.markdown(f"<div class='project-tag'>📍 Projekt: {proj_name} (ID: {active_pid})</div>", unsafe_allow_html=True)
+
     defaults = st.session_state.get('logbook_defaults', {})
     def_iso = defaults.get('iso', '')
     def_len = defaults.get('len', 0.0)
@@ -657,10 +681,8 @@ def render_logbook(df_pipe: pd.DataFrame):
             apz = c7.text_input("APZ / Zeugnis")
             sch = c8.text_input("Schweißer")
             
-            # V7.0 Feature Placeholder: project_id handling
-            active_pid = st.session_state.get('active_project_id', None)
-            
             if st.form_submit_button("Speichern 💾", type="primary"):
+                # NEU V7: Speichern mit Project ID
                 DatabaseRepository.add_entry({
                     "iso": iso, "naht": naht, "datum": dat.strftime("%d.%m.%Y"),
                     "dimension": f"DN {dn}", "bauteil": bt, "laenge": laenge_in,
@@ -672,8 +694,9 @@ def render_logbook(df_pipe: pd.DataFrame):
                 st.rerun()
 
     st.divider()
-    df = DatabaseRepository.get_all()
-    # Filter in V7.1 later
+    
+    # NEU V7: Laden NUR für aktives Projekt
+    df = DatabaseRepository.get_logbook_by_project(active_pid)
     
     if not df.empty:
         ce1, ce2, _ = st.columns([1,1,3])
@@ -685,6 +708,8 @@ def render_logbook(df_pipe: pd.DataFrame):
             if st.button(f"🗑️ {len(to_del)} löschen", type="primary"):
                 DatabaseRepository.delete_entries(to_del['id'].tolist())
                 st.rerun()
+    else:
+        st.info(f"Keine Einträge für Projekt '{proj_name}' gefunden.")
 
 def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
     row = calc.get_row(dn)
@@ -706,9 +731,9 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
         with c_in2:
             w_data = HandbookCalculator.calculate_weight(od, wt_input, len_input * 1000)
             mc1, mc2, mc3 = st.columns(3)
-            mc1.metric("Leergewicht", f"{w_data['total_steel']:.1f} kg", f"{w_data['kg_per_m_steel']:.1f} kg/m")
-            mc2.metric("Gefüllt", f"{w_data['total_filled']:.1f} kg", "Hydrotest")
-            mc3.metric("Volumen", f"{w_data['volume_l']:.0f} L")
+            mc1.metric("Leergewicht (Stahl)", f"{w_data['total_steel']:.1f} kg", f"{w_data['kg_per_m_steel']:.1f} kg/m")
+            mc2.metric("Gewicht Gefüllt", f"{w_data['total_filled']:.1f} kg", "für Hydrotest")
+            mc3.metric("Füllvolumen", f"{w_data['volume_l']:.0f} Liter", "Wasserbedarf")
 
     c_geo1, c_geo2 = st.columns(2)
     with c_geo1:
@@ -754,8 +779,8 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
         
         m1, m2, m3 = st.columns(3)
         m1.metric("Bolzen", f"{bolt} x {calc_len}", f"{n_holes} Stk.")
-        m2.metric("SW", f"{sw} mm")
-        m3.metric("Moment", f"{torque} Nm", "Geschmiert" if is_lubed else "Trocken")
+        m2.metric("Schlüsselweite", f"SW {sw} mm", "Nuss/Ring")
+        m3.metric("Drehmoment", f"{torque} Nm", "Geschmiert" if is_lubed else "Trocken")
 
 # -----------------------------------------------------------------------------
 # 5. MAIN
@@ -766,14 +791,10 @@ def main():
     df_pipe = get_pipe_data()
     calc = PipeCalculator(df_pipe)
 
-    # --- V7.0 Sidebar Structure (Placeholder for next step) ---
+    # 1. RENDER SIDEBAR (PROJECTS V7)
+    render_sidebar_projects()
+
     with st.sidebar:
-        st.title("🏗️ Projekt")
-        
-        # Projekt-Selektor kommt hier in V7.0 hin
-        # aktuell nur Dummy / Global
-        
-        st.divider()
         st.subheader("⚙️ Setup")
         dn = st.selectbox("Nennweite", df_pipe['DN'], index=8)
         pn = st.radio("Druckstufe", ["PN 16", "PN 10"], horizontal=True)
