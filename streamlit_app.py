@@ -21,99 +21,97 @@ except ImportError:
     PDF_AVAILABLE = False
 
 # -----------------------------------------------------------------------------
-# 1. KONFIGURATION & MACHINE DESIGN SYSTEM (CSS)
+# 1. KONFIGURATION & CLEAN DESIGN SYSTEM (CSS)
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_V1_1")
+logger = logging.getLogger("PipeCraft_V1_2")
 
 st.set_page_config(
-    page_title="PipeCraft v1.1",
+    page_title="PipeCraft v1.2",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- MACHINE INTERFACE CSS V3.2 (Cleaned Up) ---
+# --- CLEAN UI CSS V3.3 (Back to Basics) ---
 st.markdown("""
 <style>
     /* 1. Global Reset & Fonts */
     .main .block-container {
         padding-top: 2rem;
         padding-bottom: 3rem;
+        background-color: #f8fafc; /* Very light grey background for the page */
     }
     h1, h2, h3, h4, h5 {
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        font-weight: 700;
+        font-family: 'Segoe UI', Helvetica, Arial, sans-serif;
+        font-weight: 600;
+        color: #1e293b;
         letter-spacing: -0.5px;
-        color: #0f172a;
     }
     
-    /* 2. Headers - The "Machine Bar" Look */
+    /* 2. Headers - Clean colored accents but minimal */
     .machine-header-saw {
-        background-color: #f97316; /* Orange */
-        color: white; padding: 12px 20px; font-weight: 800; font-size: 1.1rem;
-        border-radius: 6px; letter-spacing: 1px;
-        margin-bottom: 20px; text-transform: uppercase;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        border-bottom: 4px solid #f97316; /* Orange Line */
+        color: #f97316; padding: 5px 0; font-weight: 700; font-size: 1.2rem;
+        margin-bottom: 15px; text-transform: uppercase;
     }
     .machine-header-geo {
-        background-color: #0ea5e9; /* Blue */
-        color: white; padding: 12px 20px; font-weight: 800; font-size: 1.1rem;
-        border-radius: 6px; letter-spacing: 1px;
-        margin-bottom: 20px; text-transform: uppercase;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        border-bottom: 4px solid #0ea5e9; /* Blue Line */
+        color: #0ea5e9; padding: 5px 0; font-weight: 700; font-size: 1.2rem;
+        margin-bottom: 15px; text-transform: uppercase;
     }
     .machine-header-doc {
-        background-color: #475569; /* Slate */
-        color: white; padding: 12px 20px; font-weight: 800; font-size: 1.1rem;
-        border-radius: 6px; letter-spacing: 1px;
-        margin-bottom: 20px; text-transform: uppercase;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        border-bottom: 4px solid #64748b; /* Slate Line */
+        color: #64748b; padding: 5px 0; font-weight: 700; font-size: 1.2rem;
+        margin-bottom: 15px; text-transform: uppercase;
     }
 
-    /* 3. Input Zones - Styling native st.container(border=True) */
+    /* 3. Input Zones - White Clean Cards */
     div[data-testid="stVerticalBlockBorderWrapper"] {
-        background-color: #f8fafc; /* Tech Grey Background */
-        border: 1px solid #cbd5e1;
-        border-radius: 6px;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-        padding: 1rem;
+        background-color: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        padding: 1.5rem;
     }
 
-    /* 4. Result Readout - Digital Display Style */
+    /* 4. Result Readout - CLASSIC CLEAN STYLE */
     div[data-testid="stMetric"] {
-        background-color: #1e293b; /* Dark Background */
-        border: 1px solid #0f172a;
-        border-radius: 6px;
+        background-color: #ffffff; /* WHITE Background */
+        border: 1px solid #cbd5e1; /* Grey Border */
+        border-radius: 8px;
         padding: 15px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
     }
     div[data-testid="stMetric"] label {
-        color: #94a3b8; /* Light label */
-        font-size: 0.85rem;
+        color: #64748b; /* Grey Label */
+        font-size: 0.9rem;
+        font-weight: 500;
     }
     div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
-        color: #38bdf8; /* Digital Blue Number */
-        font-family: 'Courier New', monospace;
+        color: #0f172a; /* BLACK/DARK Text */
+        font-family: 'Segoe UI', sans-serif; /* Clean Font */
         font-weight: 700;
-        font-size: 2rem;
+        font-size: 1.8rem;
     }
 
-    /* 5. Buttons - Action Oriented */
+    /* 5. Buttons - Professional */
     .stButton button {
         border-radius: 6px;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        height: 3rem;
+        font-weight: 600;
+        height: 2.8rem;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
     }
 
     /* 6. Project Tag */
     .project-tag {
         font-family: 'Segoe UI', sans-serif;
-        font-weight: 600; color: #334155;
-        padding: 5px 0; border-bottom: 2px solid #e2e8f0;
-        margin-bottom: 20px; display: block; width: 100%;
+        font-weight: 600; color: #475569;
+        padding: 8px 12px; 
+        background-color: #e2e8f0;
+        border-radius: 6px;
+        margin-bottom: 20px; display: inline-block;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -611,7 +609,7 @@ class Exporter:
 
 def render_sidebar_projects():
     st.sidebar.title("🏗️ PipeCraft")
-    st.sidebar.caption("v1.1 (Stable)")
+    st.sidebar.caption("v1.2 (Clean)")
     
     projects = DatabaseRepository.get_projects() 
     
@@ -702,7 +700,6 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
     c_calc, c_list = st.columns([1.3, 1.7])
 
     with c_calc:
-        # V1.1 FIX: Use native container instead of HTML injection
         with st.container(border=True):
             st.markdown("**1. Neuer Schnitt**")
             cut_name = st.text_input("Bezeichnung / Spool", placeholder="z.B. Strang A - 01", help="Name für die Liste")
@@ -1297,10 +1294,10 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
 # -----------------------------------------------------------------------------
 
 def main():
-    if 'v1_1_machine_migration_done' not in st.session_state:
+    if 'v1_2_clean_migration_done' not in st.session_state:
         st.session_state.saved_cuts = []
         st.session_state.fitting_list = []
-        st.session_state.v1_1_machine_migration_done = True
+        st.session_state.v1_2_clean_migration_done = True
         st.rerun()
 
     DatabaseRepository.init_db()
