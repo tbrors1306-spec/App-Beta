@@ -1,13 +1,10 @@
 """
-PipeCraft V45.0 (Streamlined Edition)
--------------------------------------
-Features:
-1.  Smart Cut: Sägeliste mit Reduzier-Logik (Groß/Klein).
-2.  Bogen: Zuschnittsrechner inkl. Rücken- & Bauchmaß.
-3.  Stutzen: Schablone mit Tabelle & Plot.
-4.  Rohrbuch: Detaillierte Erfassung & Export.
-
-REMOVED: Kalkulation, Lager, Gewicht, Etage.
+PipeCraft V44.1 (Stable Engineering Edition)
+--------------------------------------------
+Hotfix Release:
+- FIX: 'NameError: Union is not defined' behoben (Imports korrigiert).
+- CLEANUP: Doppelte Funktionsdefinitionen entfernt.
+- FEATURES: Smart Cut, Stutzen, Rohrbuch (ohne Kalkulation/Lager).
 
 Author: Senior Lead Software Engineer
 """
@@ -16,11 +13,16 @@ import streamlit as st
 import pandas as pd
 import math
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+# Expliziter Import für 3D Plots
+from mpl_toolkits.mplot3d import Axes3D 
 import sqlite3
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from io import BytesIO
-from typing import List, Optional
+# WICHTIG: Dieser Import behebt den NameError
+from typing import List, Tuple, Any, Optional, Union
 
 # -----------------------------------------------------------------------------
 # 0. SYSTEM CONFIGURATION
@@ -36,7 +38,7 @@ except ImportError:
     PDF_AVAILABLE = False
 
 st.set_page_config(
-    page_title="PipeCraft V45.0",
+    page_title="PipeCraft V44.1",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -62,6 +64,12 @@ st.markdown("""
     .detail-box { 
         background-color: #f1f5f9; border: 1px solid #cbd5e1; padding: 15px; 
         border-radius: 8px; text-align: center; font-size: 0.9rem; color: #334155; 
+    }
+    
+    .weight-box { 
+        background-color: #fff1f2; border: 1px solid #fecdd3; color: #be123c; 
+        padding: 15px; border-radius: 8px; text-align: center; font-weight: bold; 
+        margin-top: 15px; 
     }
     
     .stNumberInput input, .stSelectbox div[data-baseweb="select"] { 
@@ -112,7 +120,8 @@ SCHRAUBEN_DB = {
     "M45": [70, 2700], "M52": [80, 4200] 
 }
 
-DB_NAME = "pipecraft_v45.db"
+WS_STD_MAP = {25: 3.2, 32: 3.6, 40: 3.6, 50: 3.9, 65: 5.2, 80: 5.5, 100: 6.0, 125: 6.6, 150: 7.1, 200: 8.2, 250: 9.3, 300: 9.5, 350: 9.5, 400: 9.5, 450: 9.5, 500: 9.5}
+DB_NAME = "pipecraft_v44_1.db"
 
 # -----------------------------------------------------------------------------
 # 2. LOGIC LAYER
@@ -245,7 +254,7 @@ row = get_row_by_dn(selected_dn_global)
 standard_radius = float(row['Radius_BA3'])
 suffix = "_16" if selected_pn == "PN 16" else "_10"
 
-st.title("PipeCraft V45.0")
+st.title("PipeCraft V44.1")
 st.caption(f"🔧 Engineering Suite: DN {selected_dn_global} | {selected_pn} | Radius: {standard_radius} mm")
 
 # Nur 3 Tabs: Buch, Werkstatt, Rohrbuch
@@ -323,7 +332,6 @@ with tab_werk:
             c_res1, c_res2 = st.columns(2)
             c_res1.markdown(f"<div class='result-card-green'>Sägelänge: {round(final, 1)} mm</div>", unsafe_allow_html=True)
             c_res2.info(f"Abzüge: {round(total_deduct, 1)} mm (Teile) + {round(total_gaps*spalt, 1)} mm (Spalte)")
-            # WICHTIG: Gewichtsberechnung entfernt
 
     elif "Bogen" in tool_mode:
         st.subheader("Bogen Zuschnitt (Detail)")
