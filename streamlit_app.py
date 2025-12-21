@@ -21,10 +21,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V7_4")
+logger = logging.getLogger("PipeCraft_Pro_V7_5")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 7.4",
+    page_title="Rohrbau Profi 7.5",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -82,7 +82,7 @@ def get_pipe_data() -> pd.DataFrame:
 DB_NAME = "rohrbau_profi.db"
 
 class DatabaseRepository:
-    """Verwaltet Datenbankoperationen (V7.4: Autocomplete)."""
+    """Verwaltet Datenbankoperationen."""
     
     @staticmethod
     def init_db():
@@ -101,7 +101,6 @@ class DatabaseRepository:
                         name TEXT NOT NULL UNIQUE,
                         created_at TEXT)''')
             
-            # Migration
             c.execute("PRAGMA table_info(rohrbuch)")
             cols = [info[1] for info in c.fetchall()]
             
@@ -112,7 +111,6 @@ class DatabaseRepository:
                 try: c.execute("ALTER TABLE rohrbuch ADD COLUMN project_id INTEGER")
                 except: pass
             
-            # Ensure Project 1
             c.execute("INSERT OR IGNORE INTO projects (id, name, created_at) VALUES (1, 'Standard Baustelle', ?)", 
                       (datetime.now().strftime("%d.%m.%Y"),))
             c.execute("UPDATE rohrbuch SET project_id = 1 WHERE project_id IS NULL")
@@ -163,27 +161,12 @@ class DatabaseRepository:
             conn.cursor().execute(f"DELETE FROM rohrbuch WHERE id IN ({placeholders})", ids)
             conn.commit()
 
-    # --- NEU V7.4: AUTOCOMPLETE HELPER ---
     @staticmethod
     def get_known_values(column: str, project_id: int, limit: int = 50) -> List[str]:
-        """
-        Holt eindeutige, zuletzt verwendete Werte für ein Feld (z.B. Charge) in einem Projekt.
-        Sortiert nach ID (zuletzt eingegeben zuerst).
-        """
         allowed = ['charge', 'charge_apz', 'schweisser', 'iso']
         if column not in allowed: return []
-        
         with sqlite3.connect(DB_NAME) as conn:
-            # Query: Distinct values, ordered by latest entry descending
-            # SQLite Hack für "Last Used": Wir gruppieren und nehmen MAX(id)
-            query = f'''
-                SELECT {column} 
-                FROM rohrbuch 
-                WHERE project_id = ? AND {column} IS NOT NULL AND {column} != ''
-                GROUP BY {column}
-                ORDER BY MAX(id) DESC
-                LIMIT ?
-            '''
+            query = f'''SELECT {column} FROM rohrbuch WHERE project_id = ? AND {column} IS NOT NULL AND {column} != '' GROUP BY {column} ORDER BY MAX(id) DESC LIMIT ?'''
             rows = conn.cursor().execute(query, (project_id, limit)).fetchall()
             return [r[0] for r in rows]
 
@@ -349,6 +332,22 @@ class Visualizer:
         ax.set_zlabel('Height')
         try: ax.set_box_aspect([roll, set_val, height]) 
         except: pass
+        return fig
+
+    @staticmethod
+    def plot_rotation_gauge(roll: float, set_val: float, rotation_angle: float):
+        """Erstellt ein 'Wasserwaagen'-Diagramm für die Verdrehung."""
+        fig, ax = plt.subplots(figsize=(3, 3), subplot_kw={'projection': 'polar'})
+        theta = math.radians(rotation_angle)
+        ax.arrow(0, 0, theta, 0.9, head_width=0.1, head_length=0.1, fc='#ef4444', ec='#ef4444', length_includes_head=True)
+        ax.set_theta_zero_location("N") 
+        ax.set_theta_direction(-1)      
+        ax.set_rticks([])               
+        ax.set_rlim(0, 1)
+        ax.grid(True, alpha=0.3)
+        ax.set_title(f"Verdrehung: {rotation_angle:.1f}°", va='bottom', fontsize=10, fontweight='bold')
+        ax.text(math.radians(90), 1.2, "R", ha='center', fontweight='bold')
+        ax.text(math.radians(270), 1.2, "L", ha='center', fontweight='bold')
         return fig
 
 class Exporter:
@@ -587,19 +586,22 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                 st.rerun()
 
 def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
-    st.subheader("📐 Geometrie V6.1")
-    mode = st.radio("Modus:", ["2D Etage (S-Schlag)", "3D Raum-Etage", "Bogen-Rechner", "Stutzen"], horizontal=True, label_visibility="collapsed")
-    st.divider()
-
-    if "2D Etage" in mode:
+    st.subheader("📐 Geometrie V7.5 (Engineering)")
+    
+    # Tabs für Unter-Modi
+    geo_tabs = st.tabs(["2D Etage (S-Schlag)", "3D Raum-Etage (Rolling)", "Bogen", "Stutzen"])
+    
+    # --- 1. 2D ETAGE ---
+    with geo_tabs[0]:
         c1, c2 = st.columns([1, 2])
         with c1:
-            dn = st.selectbox("Nennweite", df['DN'], index=5)
-            offset = st.number_input("Versprung (H) [mm]", value=500.0, step=10.0)
-            angle = st.selectbox("Fittings (°)", [30, 45, 60], index=1)
-            if st.button("Berechnen 🧮", type="primary"):
+            dn = st.selectbox("Nennweite", df['DN'], index=5, key="2d_dn")
+            offset = st.number_input("Versprung (H) [mm]", value=500.0, step=10.0, key="2d_off")
+            angle = st.selectbox("Fittings (°)", [30, 45, 60], index=1, key="2d_ang")
+            if st.button("Berechnen 2D", type="primary"):
                 res = calc.calculate_2d_offset(dn, offset, angle)
                 st.session_state.calc_res_2d = res 
+        
         with c2:
             if 'calc_res_2d' in st.session_state:
                 res = st.session_state.calc_res_2d
@@ -607,37 +609,76 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 else:
                     st.markdown("#### Ergebnis")
                     m1, m2 = st.columns(2)
-                    m1.metric("Zuschnitt", f"{res['cut_length']:.1f} mm")
+                    m1.metric("Zuschnitt (Rohr)", f"{res['cut_length']:.1f} mm")
                     m2.metric("Etagenlänge", f"{res['hypotenuse']:.1f} mm")
-                    st.info(f"* Z-Maß: {res['z_mass_single']:.1f} mm\n* Versprung: {res['offset']:.1f} mm")
-                    if st.button("➡️ Maß an Säge senden"):
+                    st.info(f"Benötigter Platz (Länge): {res['run']:.1f} mm")
+                    
+                    if st.button("➡️ An Säge (2D)", key="btn_2d_saw"):
                         st.session_state.transfer_cut_length = res['cut_length']
-                        st.info("Wert kopiert!")
-                    fig, ax = plt.subplots(figsize=(6, 2))
-                    ax.plot([0, 100], [0, 0], 'k-', lw=3) 
-                    x_end = 100 + res['run']
-                    y_end = res['offset']
-                    ax.plot([100, x_end], [0, y_end], 'r-', lw=3)
-                    ax.plot([x_end, x_end+100], [y_end, y_end], 'k-', lw=3)
-                    ax.set_aspect('equal')
-                    st.pyplot(fig)
+                        st.toast("Maß übertragen!", icon="📏")
 
-    elif "3D Raum" in mode:
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            roll = st.number_input("Roll", value=400.0)
-            set_val = st.number_input("Set", value=300.0)
-            height = st.number_input("Height", value=500.0)
-        with c2:
-            res = calc.calculate_rolling_offset(100, roll, set_val, height)
-            mc1, mc2 = st.columns(2)
-            mc1.metric("Travel", f"{res['travel']:.1f} mm")
-            mc2.metric("Winkel", f"{res['angle_calc']:.1f} °")
-            with st.expander("3D Visualisierung", expanded=True):
-                fig = Visualizer.plot_rolling_offset_3d(roll, set_val, height, res['travel'])
-                st.pyplot(fig)
+    # --- 2. 3D RAUM ETAGE (ROLLING OFFSET) - NEU V7.5 ---
+    with geo_tabs[1]:
+        st.info("💡 Berechnet eine Raum-Etage mit **Standard-Fittings**.")
+        
+        col_in, col_out, col_vis = st.columns([1, 1, 1])
+        
+        with col_in:
+            st.markdown("**Eingabe**")
+            dn_roll = st.selectbox("Nennweite", df['DN'], index=5, key="3d_dn")
+            fit_angle = st.selectbox("Fitting Typ", [45, 60, 90], index=0, key="3d_ang")
+            
+            set_val = st.number_input("Versprung Höhe (Set)", value=300.0, min_value=0.0, step=10.0)
+            roll_val = st.number_input("Versprung Seite (Roll)", value=400.0, min_value=0.0, step=10.0)
+            
+            # Auto-Calc
+            true_offset = math.sqrt(set_val**2 + roll_val**2)
+            
+            # Berechnung der Geometrie basierend auf FITTING WINKEL
+            # Travel = TrueOffset / sin(FittingAngle)
+            rad_angle = math.radians(fit_angle)
+            if rad_angle > 0:
+                travel_center = true_offset / math.sin(rad_angle)
+                run_length = true_offset / math.tan(rad_angle)
+            else:
+                travel_center = 0; run_length = 0
+            
+            # Z-Maß Abzug
+            deduct_single = calc.get_deduction(f"Bogen (Zuschnitt)", dn_roll, "PN 16", fit_angle) 
+            # Hinweis: PN fest auf 16 hier für Simplizität, besser wäre global PN
+            cut_len = travel_center - (2 * deduct_single)
+            
+            # Rotation
+            # Winkel zur Senkrechten = atan(Roll / Set)
+            if set_val == 0 and roll_val == 0: rot_angle = 0.0
+            elif set_val == 0: rot_angle = 90.0
+            else: rot_angle = math.degrees(math.atan(roll_val / set_val))
 
-    elif "Bogen" in mode:
+        with col_out:
+            st.markdown("**Ergebnis**")
+            st.metric("Zuschnitt (Rohr)", f"{cut_len:.1f} mm")
+            st.caption(f"Einbaumaß (Mitte-Mitte): {travel_center:.1f} mm")
+            
+            st.metric("Baulänge (Run)", f"{run_length:.1f} mm", help="Platzbedarf in Längsrichtung")
+            
+            if cut_len < 0:
+                st.error("Nicht baubar! Fittings stoßen zusammen.")
+            else:
+                if st.button("➡️ An Säge (3D)", key="btn_3d_saw"):
+                    st.session_state.transfer_cut_length = cut_len
+                    st.toast("Maß übertragen!", icon="📏")
+
+        with col_vis:
+            st.markdown("**Montage**")
+            st.metric("Verdrehung", f"{rot_angle:.1f} °", "aus der Senkrechten")
+            
+            # Gauge Plot
+            fig_gauge = Visualizer.plot_rotation_gauge(roll_val, set_val, rot_angle)
+            st.pyplot(fig_gauge, use_container_width=False)
+            st.caption("Blick in Rohrrichtung")
+
+    # --- 3. BOGEN RECHNER ---
+    with geo_tabs[2]:
         cb1, cb2 = st.columns(2)
         angle = cb1.slider("Winkel", 0, 90, 45, key="gb_ang")
         dn_b = cb2.selectbox("DN", df['DN'], index=6, key="gb_dn")
@@ -650,11 +691,12 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
             cm2.metric("Mitte", f"{details['bogen_mitte']:.1f}") 
             cm3.metric("Bauch", f"{details['bogen_innen']:.1f}")
 
-    elif "Stutzen" in mode:
+    # --- 4. STUTZEN ---
+    with geo_tabs[3]:
         c1, c2 = st.columns(2)
         dn_stub = c1.selectbox("DN Stutzen", df['DN'], index=5, key="gs_dn1")
         dn_main = c2.selectbox("DN Hauptrohr", df['DN'], index=8, key="gs_dn2")
-        if c1.button("Berechnen"):
+        if c1.button("Berechnen Stutzen"):
             try:
                 df_c = calc.calculate_stutzen_coords(dn_main, dn_stub)
                 fig = Visualizer.plot_stutzen(dn_main, dn_stub, df)
