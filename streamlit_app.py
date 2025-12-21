@@ -21,10 +21,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V5_2")
+logger = logging.getLogger("PipeCraft_Pro_V5_3")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 5.2",
+    page_title="Rohrbau Profi 5.3",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -118,7 +118,6 @@ class DatabaseRepository:
                         dimension TEXT, bauteil TEXT, laenge REAL, 
                         charge TEXT, charge_apz TEXT, schweisser TEXT)''')
             
-            # Migration APZ
             c.execute("PRAGMA table_info(rohrbuch)")
             cols = [info[1] for info in c.fetchall()]
             if 'charge_apz' not in cols:
@@ -178,7 +177,7 @@ class SavedCut:
     timestamp: str
 
 class PipeCalculator:
-    """Zentrale Logik für Säge, Bogen und Stutzen."""
+    """Zentrale Logik."""
     
     def __init__(self, df: pd.DataFrame):
         self.df = df
@@ -187,11 +186,9 @@ class PipeCalculator:
         row = self.df[self.df['DN'] == dn]
         return row.iloc[0] if not row.empty else self.df.iloc[0]
 
-    # --- SÄGE (Z-Maße) ---
     def get_deduction(self, f_type: str, dn: int, pn: str, angle: float = 90.0) -> float:
         row = self.get_row(dn)
         suffix = "_16" if pn == "PN 16" else "_10"
-        
         if "Bogen 90°" in f_type: return float(row['Radius_BA3'])
         if "Zuschnitt" in f_type: return float(row['Radius_BA3']) * math.tan(math.radians(angle / 2))
         if "Flansch" in f_type: return float(row[f'Flansch_b{suffix}'])
@@ -199,14 +196,11 @@ class PipeCalculator:
         if "Reduzierung" in f_type: return float(row['Red_Laenge_L'])
         return 0.0
 
-    # --- BOGEN-RECHNER ---
     def calculate_bend_details(self, dn: int, angle: float) -> Dict[str, float]:
-        """Berechnet alle relevanten Bogenmaße für die Geometrie-Ansicht."""
         row = self.get_row(dn)
         r = float(row['Radius_BA3'])
         da = float(row['D_Aussen'])
         rad = math.radians(angle)
-        
         return {
             "vorbau": r * math.tan(rad / 2),
             "bogen_aussen": (r + da/2) * rad,
@@ -214,13 +208,10 @@ class PipeCalculator:
             "bogen_innen": (r - da/2) * rad
         }
 
-    # --- STUTZEN (Sinus) ---
     def calculate_stutzen_coords(self, dn_haupt: int, dn_stutzen: int) -> pd.DataFrame:
         r_main = self.get_row(dn_haupt)['D_Aussen'] / 2
         r_stub = self.get_row(dn_stutzen)['D_Aussen'] / 2
-
         if r_stub > r_main: raise ValueError(f"Stutzen DN {dn_stutzen} ist größer als Hauptrohr!")
-
         table_data = []
         for angle in [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 180]:
             try:
@@ -232,66 +223,36 @@ class PipeCalculator:
         return pd.DataFrame(table_data)
 
 class HandbookCalculator:
-    """
-    NEU: Spezialisierte Logik für das technische Tabellenbuch (Smart Data).
-    """
-    
-    # M-Gewinde: [SW, Nm_Trocken, Nm_Geschmiert(Molykote)]
     BOLT_DATA = {
-        "M12": [19, 85, 55],    
-        "M16": [24, 210, 135],
-        "M20": [30, 410, 265],
-        "M24": [36, 710, 460],
-        "M27": [41, 1050, 680],
-        "M30": [46, 1420, 920],
-        "M33": [50, 1930, 1250],
-        "M36": [55, 2480, 1600],
-        "M39": [60, 3200, 2080],
-        "M45": [70, 5000, 3250],
-        "M52": [80, 7700, 5000]
+        "M12": [19, 85, 55], "M16": [24, 210, 135], "M20": [30, 410, 265],
+        "M24": [36, 710, 460], "M27": [41, 1050, 680], "M30": [46, 1420, 920],
+        "M33": [50, 1930, 1250], "M36": [55, 2480, 1600], "M39": [60, 3200, 2080],
+        "M45": [70, 5000, 3250], "M52": [80, 7700, 5000]
     }
 
     @staticmethod
     def calculate_weight(od: float, wall: float, length: float) -> dict:
-        """Berechnet Stahlgewicht und Wasserfüllung (Hydrotest)."""
         if wall <= 0: return {"steel": 0, "water": 0, "total": 0}
-        
-        # Stahl-Dichte ca. 7.85 kg/dm³
         id_mm = od - (2 * wall)
-        vol_steel_m = (math.pi * (od**2 - id_mm**2) / 4) / 1_000_000 # m² Querschnitt
-        weight_steel_kgm = vol_steel_m * 7850 # kg/m
-        
-        # Wasser
-        vol_water_m = (math.pi * (id_mm**2) / 4) / 1_000_000 # m²
-        weight_water_kgm = vol_water_m * 1000 # kg/m (Dichte 1.0)
-        
+        vol_steel_m = (math.pi * (od**2 - id_mm**2) / 4) / 1_000_000 
+        weight_steel_kgm = vol_steel_m * 7850 
+        vol_water_m = (math.pi * (id_mm**2) / 4) / 1_000_000 
+        weight_water_kgm = vol_water_m * 1000 
         return {
             "kg_per_m_steel": weight_steel_kgm,
-            "kg_per_m_water": weight_water_kgm,
             "total_steel": weight_steel_kgm * (length / 1000),
             "total_filled": (weight_steel_kgm + weight_water_kgm) * (length / 1000),
-            "volume_l": vol_water_m * (length / 1000) * 1000 # in Liter
+            "volume_l": vol_water_m * (length / 1000) * 1000 
         }
 
     @staticmethod
     def get_bolt_length(flange_thk_1: float, flange_thk_2: float, bolt_dim: str, washers: int = 2, gasket: float = 2.0) -> int:
-        """Berechnet die Schraubenlänge dynamisch."""
         try:
             d = int(bolt_dim.replace("M", ""))
-            h_nut = d * 0.8
-            h_washer = 4.0
-            overhang = max(6.0, d * 0.4) 
-            
-            calc_len = flange_thk_1 + flange_thk_2 + gasket + (washers * h_washer) + h_nut + overhang
-            
-            # Aufrunden auf nächste 5mm
-            remainder = calc_len % 5
-            if remainder != 0:
-                calc_len += (5 - remainder)
-            
-            return int(calc_len)
-        except:
-            return 0
+            calc_len = flange_thk_1 + flange_thk_2 + gasket + (washers * 4.0) + (d * 0.8) + max(6.0, d * 0.4)
+            rem = calc_len % 5
+            return int(calc_len + (5 - rem) if rem != 0 else calc_len)
+        except: return 0
 
 class Visualizer:
     @staticmethod
@@ -300,9 +261,7 @@ class Visualizer:
         row_s = df_pipe[df_pipe['DN'] == dn_stutzen].iloc[0]
         r_main = row_h['D_Aussen'] / 2
         r_stub = row_s['D_Aussen'] / 2
-        
         if r_stub > r_main: return None
-
         angles = range(0, 361, 5)
         depths = []
         for a in angles:
@@ -310,7 +269,6 @@ class Visualizer:
                 term = r_stub * math.sin(math.radians(a))
                 depths.append(r_main - math.sqrt(r_main**2 - term**2))
             except: depths.append(0)
-
         fig, ax = plt.subplots(figsize=(8, 2))
         ax.plot(angles, depths, color='#3b82f6', linewidth=2)
         ax.fill_between(angles, depths, color='#eff6ff', alpha=0.5)
@@ -337,13 +295,11 @@ class Exporter:
         pdf.set_font("Arial", 'B', 16)
         pdf.cell(0, 10, f"Rohrbuch - {datetime.now().strftime('%d.%m.%Y')}", 0, 1, 'C')
         pdf.ln(5)
-        
         cols = ["ISO", "Naht", "Datum", "DN", "Bauteil", "Charge", "APZ", "Schweißer"]
         widths = [30, 20, 25, 20, 40, 35, 35, 30]
         pdf.set_font("Arial", 'B', 8)
         for i, c in enumerate(cols): pdf.cell(widths[i], 8, c, 1)
         pdf.ln()
-        
         pdf.set_font("Arial", size=8)
         export_df = df.drop(columns=['Löschen', 'id'], errors='ignore')
         for _, row in export_df.iterrows():
@@ -365,10 +321,8 @@ class Exporter:
 # -----------------------------------------------------------------------------
 
 def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn: str):
-    """Smarte Säge V4.1"""
     st.subheader("🪚 Smarte Säge 5.2")
     
-    # State Healing
     if 'fitting_list' in st.session_state and st.session_state.fitting_list:
         try: _ = st.session_state.fitting_list[0].id
         except AttributeError: st.session_state.fitting_list = []
@@ -450,7 +404,6 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                 st.rerun()
 
 def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
-    """Geometrie Tools inkl. BOGEN MITTE."""
     st.subheader("📐 Geometrie & Schablonen")
     
     t_stutz, t_bogen = st.tabs(["🔥 Stutzen-Schablone", "🔄 Bogen-Rechner"])
@@ -471,7 +424,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 st.error(str(e))
 
     with t_bogen:
-        st.markdown("#### Bogen Zuschnitt & Kontrolle")
+        st.markdown("#### Bogen Zuschnitt")
         cb1, cb2 = st.columns(2)
         angle = cb1.slider("Winkel (°)", 0, 90, 45, key="gb_ang")
         dn_b = cb2.selectbox("DN Bogen", df['DN'], index=6, key="gb_dn")
@@ -493,9 +446,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
             cm3.metric("Innen (Bauch)", f"{details['bogen_innen']:.1f} mm")
 
 def render_logbook(df_pipe: pd.DataFrame):
-    """Rohrbuch V2.1"""
     st.subheader("📝 Digitales Rohrbuch")
-    
     with st.expander("Eintrag hinzufügen", expanded=True):
         with st.form("lb_new"):
             c1, c2, c3 = st.columns(3)
@@ -509,7 +460,6 @@ def render_logbook(df_pipe: pd.DataFrame):
             c7, c8 = st.columns(2)
             apz = c7.text_input("APZ / Zeugnis")
             sch = c8.text_input("Schweißer")
-            
             if st.form_submit_button("Speichern 💾", type="primary"):
                 DatabaseRepository.add_entry({
                     "iso": iso, "naht": naht, "datum": dat.strftime("%d.%m.%Y"),
@@ -538,29 +488,21 @@ def render_logbook(df_pipe: pd.DataFrame):
                 st.rerun()
 
 def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
-    """
-    NEU V5.0: Smart Data Hub für den Großleitungsbau.
-    """
     row = calc.get_row(dn)
     suffix = "_16" if pn == "PN 16" else "_10"
-    
     st.subheader(f"📚 Smart Data: DN {dn} / {pn}")
 
-    # Basisdaten
     od = float(row['D_Aussen'])
     flange_b = float(row[f'Flansch_b{suffix}'])
     lk = float(row[f'LK_k{suffix}'])
     bolt = row[f'Schraube_M{suffix}']
     n_holes = int(row[f'Lochzahl{suffix}'])
     
-    # MODUL 1: ROHR & LASTEN
     with st.expander("🏗️ Rohrgewichte & Hydrotest (Kran/Gerüst)", expanded=True):
         c_in1, c_in2 = st.columns([1, 2])
-        
         with c_in1:
             wt_input = st.number_input("Wandstärke (mm)", value=6.3, min_value=1.0, step=0.1)
             len_input = st.number_input("Rohrlänge (m)", value=6.0, step=0.5)
-            
         with c_in2:
             w_data = HandbookCalculator.calculate_weight(od, wt_input, len_input * 1000)
             mc1, mc2, mc3 = st.columns(3)
@@ -568,14 +510,17 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
             mc2.metric("Gewicht Gefüllt", f"{w_data['total_filled']:.1f} kg", "für Hydrotest")
             mc3.metric("Füllvolumen", f"{w_data['volume_l']:.0f} Liter", "Wasserbedarf")
 
-    # MODUL 2: FLANSCH & DICHTUNG
     c_geo1, c_geo2 = st.columns(2)
     with c_geo1:
         st.markdown("#### 📐 Flansch Geometrie")
         st.write(f"**Blattstärke:** {flange_b} mm")
         st.write(f"**Lochkreis:** {lk} mm")
         st.write(f"**Lochzahl:** {n_holes} x {bolt}")
-        st.progress(lk / (od + 100), text=f"Lochkreis Verhältnis")
+        # BUGFIX V5.3: Progress Bar Crash Fix für große Dimensionen (DN 400+)
+        # Alter Code: st.progress(lk / (od + 100)) -> Crash bei > 1.0
+        # Neuer Code: Wir limitieren den Wert auf 1.0
+        progress_val = min(lk / (od + 100), 1.0)
+        st.progress(progress_val, text=f"Lochkreis Verhältnis")
 
     with c_geo2:
         st.markdown("#### 🔘 Dichtung (Check)")
@@ -584,8 +529,6 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
         st.info(f"* Innen-Ø: ~{d_innen:.0f} mm\n* Außen-Ø: ~{d_aussen:.0f} mm\n* Dicke: 2.0 mm (Std)")
 
     st.divider()
-
-    # MODUL 3: MONTAGEMANAGER
     st.markdown("#### 🔧 Montage & Drehmomente (8.8)")
     cb_col1, cb_col2 = st.columns([1, 2])
     
