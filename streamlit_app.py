@@ -9,6 +9,13 @@ from typing import List, Optional, Tuple, Dict, Any, Union
 from datetime import datetime
 import matplotlib.pyplot as plt
 
+# Versuch, FPDF für PDF-Export zu importieren
+try:
+    from fpdf import FPDF
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
+
 # -----------------------------------------------------------------------------
 # 1. KONFIGURATION & LOGGING
 # -----------------------------------------------------------------------------
@@ -74,9 +81,7 @@ st.markdown("""
 
 @st.cache_data
 def get_pipe_data() -> pd.DataFrame:
-    """
-    Lädt die statischen Rohdaten. Caching verbessert die Performance.
-    """
+    """Lädt die statischen Rohdaten."""
     raw_data = {
         'DN':            [25, 32, 40, 50, 65, 80, 100, 125, 150, 200, 250, 300, 350, 400, 450, 500, 600, 700, 800, 900, 1000, 1200, 1400, 1600],
         'D_Aussen':      [33.7, 42.4, 48.3, 60.3, 76.1, 88.9, 114.3, 139.7, 168.3, 219.1, 273.0, 323.9, 355.6, 406.4, 457.0, 508.0, 610.0, 711.0, 813.0, 914.0, 1016.0, 1219.0, 1422.0, 1626.0],
@@ -109,40 +114,147 @@ SCHRAUBEN_DB = {
 DB_NAME = "rohrbau_profi.db"
 
 class DatabaseRepository:
-    """Verwaltet Datenbankoperationen (SQLite)."""
+    """Verwaltet Datenbankoperationen (SQLite) mit Migrations-Logik."""
     
     @staticmethod
     def init_db():
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
+            # Basistabelle erstellen
             c.execute('''CREATE TABLE IF NOT EXISTS rohrbuch (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                        iso TEXT, naht TEXT, datum TEXT, 
-                        dimension TEXT, bauteil TEXT, laenge REAL, 
-                        charge TEXT, schweisser TEXT)''')
+                        iso TEXT, 
+                        naht TEXT, 
+                        datum TEXT, 
+                        dimension TEXT, 
+                        bauteil TEXT, 
+                        laenge REAL, 
+                        charge TEXT, 
+                        charge_apz TEXT,
+                        schweisser TEXT)''')
+            
+            # MIGRATION CHECK: Prüfen, ob die Spalte 'charge_apz' existiert (für Upgrades von V1.0)
+            c.execute("PRAGMA table_info(rohrbuch)")
+            columns = [info[1] for info in c.fetchall()]
+            
+            if 'charge_apz' not in columns:
+                try:
+                    c.execute("ALTER TABLE rohrbuch ADD COLUMN charge_apz TEXT")
+                    logging.info("Datenbank migriert: Spalte 'charge_apz' hinzugefügt.")
+                except Exception as e:
+                    logging.error(f"Fehler bei Migration: {e}")
+            
             conn.commit()
 
     @staticmethod
-    def add_entry(data: Tuple):
+    def add_entry(data: dict):
+        """Nutzt nun ein Dictionary für sicherere Zuordnung."""
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
-            c.execute('INSERT INTO rohrbuch (iso, naht, datum, dimension, bauteil, laenge, charge, schweisser) VALUES (?,?,?,?,?,?,?,?)', data)
+            c.execute('''INSERT INTO rohrbuch 
+                         (iso, naht, datum, dimension, bauteil, laenge, charge, charge_apz, schweisser) 
+                         VALUES (:iso, :naht, :datum, :dimension, :bauteil, :laenge, :charge, :charge_apz, :schweisser)''', 
+                         data)
             conn.commit()
 
     @staticmethod
     def get_all() -> pd.DataFrame:
         with sqlite3.connect(DB_NAME) as conn:
-            return pd.read_sql_query("SELECT * FROM rohrbuch ORDER BY id DESC", conn)
+            # Füge eine Spalte 'Löschen' für den Editor hinzu (Standard False)
+            df = pd.read_sql_query("SELECT * FROM rohrbuch ORDER BY id DESC", conn)
+            # Falls DataFrame leer ist, müssen wir sicherstellen, dass 'Löschen' existiert
+            if not df.empty:
+                df['Löschen'] = False 
+            else:
+                # Leeres DataFrame mit korrekten Spalten erzeugen
+                cols = ["id", "iso", "naht", "datum", "dimension", "bauteil", "laenge", "charge", "charge_apz", "schweisser", "Löschen"]
+                df = pd.DataFrame(columns=cols)
+            return df
 
     @staticmethod
-    def delete_entry(entry_id: int):
+    def delete_entries(ids: List[int]):
+        """Löscht mehrere Einträge auf einmal."""
+        if not ids: return
         with sqlite3.connect(DB_NAME) as conn:
-            conn.cursor().execute("DELETE FROM rohrbuch WHERE id=?", (entry_id,))
+            # SQL IN Clause sicher bauen
+            placeholders = ', '.join('?' for _ in ids)
+            sql = f"DELETE FROM rohrbuch WHERE id IN ({placeholders})"
+            conn.cursor().execute(sql, ids)
             conn.commit()
 
 # -----------------------------------------------------------------------------
-# 3. LOGIK-SCHICHT (CALCULATION LOGIC & MODELS)
+# 3. HELPER & LOGIK-SCHICHT
 # -----------------------------------------------------------------------------
+
+class Exporter:
+    """Zuständig für Excel und PDF Downloads."""
+    
+    @staticmethod
+    def to_excel(df: pd.DataFrame) -> bytes:
+        output = BytesIO()
+        # Spalte 'Löschen' und 'id' für den Export entfernen
+        export_df = df.drop(columns=['Löschen', 'id'], errors='ignore')
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            export_df.to_excel(writer, index=False, sheet_name='Rohrbuch')
+        return output.getvalue()
+
+    @staticmethod
+    def to_pdf(df: pd.DataFrame) -> bytes:
+        if not PDF_AVAILABLE:
+            return b"Fehler: FPDF Bibliothek nicht installiert."
+            
+        try:
+            pdf = FPDF(orientation='L', unit='mm', format='A4')
+            pdf.add_page()
+            pdf.set_font("Arial", size=10)
+            
+            # Titel
+            pdf.set_font("Arial", 'B', 16)
+            pdf.cell(0, 10, f"Rohrbuch Export - {datetime.now().strftime('%d.%m.%Y')}", 0, 1, 'C')
+            pdf.ln(5)
+            
+            # Header
+            pdf.set_font("Arial", 'B', 8)
+            cols = ["ISO", "Naht", "Datum", "DN", "Bauteil", "Charge", "APZ", "Schweißer"]
+            widths = [35, 20, 25, 20, 40, 35, 35, 30]
+            
+            for i, col in enumerate(cols):
+                pdf.cell(widths[i], 8, col, 1, 0, 'C')
+            pdf.ln()
+            
+            # Data
+            pdf.set_font("Arial", size=8)
+            export_df = df.drop(columns=['Löschen', 'id'], errors='ignore')
+            
+            for _, row in export_df.iterrows():
+                try:
+                    # Daten holen und sicherstellen dass es Strings sind
+                    v_iso = str(row.get('iso', ''))
+                    v_naht = str(row.get('naht', ''))
+                    v_dat = str(row.get('datum', ''))
+                    v_dim = str(row.get('dimension', ''))
+                    v_bau = str(row.get('bauteil', ''))[:25]
+                    v_cha = str(row.get('charge', ''))
+                    v_apz = str(row.get('charge_apz', ''))
+                    v_schw = str(row.get('schweisser', ''))
+
+                    # Zeile schreiben
+                    pdf.cell(widths[0], 8, v_iso.encode('latin-1', 'replace').decode('latin-1'), 1)
+                    pdf.cell(widths[1], 8, v_naht.encode('latin-1', 'replace').decode('latin-1'), 1)
+                    pdf.cell(widths[2], 8, v_dat.encode('latin-1', 'replace').decode('latin-1'), 1)
+                    pdf.cell(widths[3], 8, v_dim.encode('latin-1', 'replace').decode('latin-1'), 1)
+                    pdf.cell(widths[4], 8, v_bau.encode('latin-1', 'replace').decode('latin-1'), 1)
+                    pdf.cell(widths[5], 8, v_cha.encode('latin-1', 'replace').decode('latin-1'), 1)
+                    pdf.cell(widths[6], 8, v_apz.encode('latin-1', 'replace').decode('latin-1'), 1)
+                    pdf.cell(widths[7], 8, v_schw.encode('latin-1', 'replace').decode('latin-1'), 1)
+                    pdf.ln()
+                except Exception:
+                    continue 
+                    
+            return pdf.output(dest='S').encode('latin-1', 'replace')
+            
+        except Exception as e:
+            return str(e).encode()
 
 @dataclass
 class FittingItem:
@@ -181,48 +293,34 @@ class PipeCalculator:
         return row.iloc[0]
 
     def get_deduction(self, fitting_type: str, dn_large: int, pn_suffix: str = "_16", angle: float = 90.0) -> float:
-        """
-        Berechnet das Abzugsmaß (Z-Maß) für ein Bauteil.
-        """
         row = self.get_row_by_dn(dn_large)
-        
         if "Bogen 90°" in fitting_type:
             return float(row['Radius_BA3'])
-        
         elif "Bogen (Zuschnitt)" in fitting_type:
-            # Formel: Radius * tan(Winkel / 2)
             radius = float(row['Radius_BA3'])
             return radius * math.tan(math.radians(angle / 2))
-        
         elif "Flansch" in fitting_type:
             col_name = f'Flansch_b{pn_suffix}'
             return float(row[col_name])
-            
         elif "T-Stück" in fitting_type:
             return float(row['T_Stueck_H'])
-            
         elif "Reduzierung" in fitting_type:
-            # Bei Reduzierung gilt Länge L basierend auf DN groß
             return float(row['Red_Laenge_L'])
-            
         return 0.0
 
     def calculate_stutzen_coords(self, dn_haupt: int, dn_stutzen: int) -> Tuple[pd.DataFrame, plt.Figure]:
-        """Berechnet Koordinaten und Plot für Stutzen-Ausschneidung."""
         r_main = self.get_row_by_dn(dn_haupt)['D_Aussen'] / 2
         r_stub = self.get_row_by_dn(dn_stutzen)['D_Aussen'] / 2
 
         if r_stub > r_main:
             raise ValueError("Stutzenradius darf nicht größer als Hauptrohr sein.")
 
-        angles = range(0, 361, 5) # Plotting resolution
+        angles = range(0, 361, 5)
         try:
-            # Verschneidungsformel Zylinder/Zylinder
             depths = [r_main - math.sqrt(r_main**2 - (r_stub * math.sin(math.radians(a)))**2) for a in angles]
         except ValueError:
              raise ValueError("Mathematischer Fehler bei der Kurvenberechnung.")
 
-        # DataFrame für Tabelle (grobere Schritte)
         table_data = []
         for angle in [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 180]:
             t_val = r_main - math.sqrt(r_main**2 - (r_stub * math.sin(math.radians(angle)))**2)
@@ -233,13 +331,12 @@ class PipeCalculator:
                 "Umfang (mm)": round(u_val, 1)
             })
 
-        # Plot erstellen
         fig, ax = plt.subplots(figsize=(10, 2.5))
         ax.plot(angles, depths, color='#3b82f6', linewidth=2)
         ax.fill_between(angles, depths, color='#eff6ff', alpha=0.5)
         ax.set_xlim(0, 360)
-        ax.set_ylabel("Ausschnitt-Tiefe (mm)")
-        ax.set_xlabel("Umfangswinkel (°)")
+        ax.set_ylabel("Tiefe (mm)")
+        ax.set_xlabel("Winkel (°)")
         ax.grid(True, linestyle='--', alpha=0.5)
         plt.tight_layout()
 
@@ -252,44 +349,24 @@ class PipeCalculator:
 def render_sidebar(df: pd.DataFrame) -> Tuple[int, str]:
     with st.sidebar:
         st.title("⚙️ Einstellungen")
-        
-        # Container für bessere Gruppierung
         with st.container():
             st.markdown("### Globale Parameter")
-            selected_dn = st.selectbox(
-                "Nennweite (DN)", 
-                df['DN'], 
-                index=8, # DN 150 Default
-                key="global_dn"
-            )
-            selected_pn = st.radio(
-                "Druckstufe", 
-                ["PN 16", "PN 10"], 
-                horizontal=True,
-                key="global_pn"
-            )
-        
-        st.info("Diese Einstellungen beeinflussen alle Tabs (Tabellenbuch, Sägeliste etc.).")
+            selected_dn = st.selectbox("Nennweite (DN)", df['DN'], index=8, key="global_dn")
+            selected_pn = st.radio("Druckstufe", ["PN 16", "PN 10"], horizontal=True, key="global_pn")
+        st.info("Diese Einstellungen beeinflussen alle Tabs.")
         st.divider()
         st.caption(f"Rohrbau Profi v8.0\n© 2025 PipeCraft Solutions")
-        
         return selected_dn, selected_pn
 
 def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
     row = calc.get_row_by_dn(dn)
     suffix = "_16" if pn == "PN 16" else "_10"
-    
     st.markdown(f"## Tabellenbuch: DN {dn} / {pn}")
-    
-    # 3 Spalten Layout für kompakte Info
     col1, col2, col3 = st.columns(3)
-    
     with col1:
         st.markdown("### 📐 Rohr & Bogen")
         st.metric("Außen-Ø", f"{row['D_Aussen']} mm")
-        st.metric("Radius (BA3)", f"{row['Radius_BA3']} mm", help="Standard Rohrbogen Bauart 3")
-        st.metric("Wandstärke (Ref)", "Norm-abhängig")
-
+        st.metric("Radius (BA3)", f"{row['Radius_BA3']} mm")
     with col2:
         st.markdown(f"### 🔩 Flansch ({pn})")
         st.metric("Blattstärke", f"{row[f'Flansch_b{suffix}']} mm")
@@ -297,21 +374,15 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
         schraube = row[f'Schraube_M{suffix}']
         info = SCHRAUBEN_DB.get(schraube, {'sw': '?', 'nm': '?'})
         st.info(f"**{row[f'Lochzahl{suffix}']}x {schraube}**\n\nSW: {info['sw']} mm | {info['nm']} Nm")
-
     with col3:
         st.markdown("### 🧩 Einbaulängen")
         st.write(f"**T-Stück (H):** {row['T_Stueck_H']} mm")
         st.write(f"**Reduzierung (L):** {row['Red_Laenge_L']} mm")
-        st.write(f"**Schraubenlänge (F-F):** {row[f'L_Fest{suffix}']} mm")
-        st.write(f"**Schraubenlänge (F-L):** {row[f'L_Los{suffix}']} mm")
+        st.write(f"**Schrauben (F-F):** {row[f'L_Fest{suffix}']} mm")
+        st.write(f"**Schrauben (F-L):** {row[f'L_Los{suffix}']} mm")
 
 def render_tab_workshop(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn: str):
-    """
-    Rendert den Werkstatt-Tab mit der neuen V2.0 Sägeliste.
-    """
     st.markdown("## 📐 Werkstatt & Sägeliste V2.0")
-    
-    # Initialisiere Session State für die persistente Liste, falls noch nicht vorhanden
     if 'cut_list_storage' not in st.session_state:
         st.session_state.cut_list_storage = []
     if 'next_id' not in st.session_state:
@@ -319,35 +390,25 @@ def render_tab_workshop(calc: PipeCalculator, df: pd.DataFrame, current_dn: int,
 
     tab_saw, tab_bend, tab_branch = st.tabs(["🪚 Smart Sägeliste", "🔄 Bogen Details", "🔥 Stutzen"])
     
-    # --- SUB-TAB: SMART SÄGELISTE (NEU V2.0) ---
     with tab_saw:
-        # Split-View: Links Kalkulation, Rechts Liste
         col_calc, col_storage = st.columns([1.2, 1.8])
         
         with col_calc:
-            st.markdown("### 1. Kalkulation (Aktuelles Spool)")
-            
-            # A) Metadaten (Kontext)
+            st.markdown("### 1. Kalkulation (Spool)")
             with st.container(): 
                 c_meta1, c_meta2 = st.columns(2)
                 iso_ref = c_meta1.text_input("ISO / Projekt", key="meta_iso", placeholder="z.B. L-1004")
                 spool_nr = c_meta2.text_input("Spool Nr.", key="meta_spool", placeholder="01")
-
             st.divider()
-
-            # B) Maßeingabe
-            iso_mass = st.number_input("Gesamtmaß (Isometrie) [mm]", min_value=0.0, step=10.0, format="%.1f", key="input_iso_mass")
+            iso_mass = st.number_input("Isomaß [mm]", min_value=0.0, step=10.0, format="%.1f", key="input_iso_mass")
             
-            # C) Abzüge definieren (Dichtungen & Formteile)
             with st.expander("🛠️ Bauteile & Abzüge", expanded=True):
-                # 1. Dichtungen & Spalte (NEU)
                 st.caption("Dichtungen & Spalte")
                 c_gap1, c_gap2, c_gap3 = st.columns(3)
                 gap_weld = c_gap1.number_input("Wurzelspalt (mm)", value=3.0, step=0.5)
-                gasket_count = c_gap2.number_input("Anz. Dichtungen", value=0, min_value=0, max_value=2, help="0=Keine, 1=Einseitig, 2=Beidseitig")
-                gasket_thk = c_gap3.number_input("Dicke (mm)", value=2.0, min_value=0.0, step=0.5, disabled=(gasket_count==0))
+                gasket_count = c_gap2.number_input("Anz. Dicht.", value=0, min_value=0, max_value=2)
+                gasket_thk = c_gap3.number_input("Dicke (mm)", value=2.0, min_value=0.0, disabled=(gasket_count==0))
                 
-                # 2. Formteile hinzufügen
                 st.caption("Formteile hinzufügen")
                 with st.form("add_fitting_v2", clear_on_submit=True):
                     f_type = st.selectbox("Typ", ["Bogen 90° (BA3)", "Bogen (Zuschnitt)", "Flansch (Vorschweiß)", "T-Stück", "Reduzierung (konz.)"])
@@ -358,50 +419,32 @@ def render_tab_workshop(calc: PipeCalculator, df: pd.DataFrame, current_dn: int,
                         f_angle = c_f2.number_input("Winkel", value=45.0)
                     else:
                         c_f2.text("Standard")
-                    
                     f_count = st.number_input("Anzahl", 1, 10, 1)
-                    if st.form_submit_button("Bauteil hinzufügen ➕"):
+                    if st.form_submit_button("Hinzufügen ➕"):
                         deduction = calc.get_deduction(f_type, f_dn, "_16" if pn == "PN 16" else "_10", f_angle)
                         item_name = f"{f_type} DN{f_dn}"
                         if "Zuschnitt" in f_type: item_name += f" ({f_angle}°)"
                         st.session_state.fitting_list.append(FittingItem(item_name, f_count, deduction, f_dn))
                         st.rerun()
 
-            # D) Live-Berechnung des aktuellen Stücks
-            # Summe Formteile
             sum_fittings = sum([i.total_deduction for i in st.session_state.fitting_list])
             count_fittings = sum([i.count for i in st.session_state.fitting_list])
-            
-            # Summe Spalte (Annahme: 1 Naht pro Bauteil + 1)
-            # Hier vereinfacht: User gibt Spalt vor, wir multiplizieren mit Anzahl Bauteile. 
-            # In der Praxis oft: (Anzahl Bauteile) * Spalt.
             sum_welds = count_fittings * gap_weld
-            
-            # Summe Dichtungen
             sum_gaskets = gasket_count * gasket_thk
-            
             total_deduction = sum_fittings + sum_welds + sum_gaskets
             final_cut = iso_mass - total_deduction
 
-            # Anzeige Ergebnis
             if final_cut < 0:
                 st.error(f"Negativmaß! Abzüge ({total_deduction}) > Iso ({iso_mass})")
             else:
                 st.markdown(f"<div class='success-box' style='text-align:center'>Sägelänge<br><span style='font-size:1.8em'>{final_cut:.1f} mm</span></div>", unsafe_allow_html=True)
+                st.caption(f"Teile: -{sum_fittings:.1f} | Spalte: -{sum_welds:.1f} | Dicht.: -{sum_gaskets:.1f}")
                 
-                # Detail-Info string bauen
-                details_str = f"Teile: -{sum_fittings:.1f} | Spalte: -{sum_welds:.1f} | Dichtungen: -{sum_gaskets:.1f}"
-                st.caption(details_str)
-                
-                # E) Buttons: Reset & Speichern
                 btn_col1, btn_col2 = st.columns(2)
-                
                 if btn_col1.button("Reset Bauteile 🗑️"):
                     st.session_state.fitting_list = []
                     st.rerun()
-                
-                # Zur Liste hinzufügen
-                if btn_col2.button("💾 In Liste speichern", type="primary"):
+                if btn_col2.button("💾 Speichern", type="primary"):
                     if iso_mass > 0:
                         new_entry = CutListEntry(
                             id=st.session_state.next_id,
@@ -417,156 +460,156 @@ def render_tab_workshop(calc: PipeCalculator, df: pd.DataFrame, current_dn: int,
                         st.success("Gespeichert!")
                         st.rerun()
                     else:
-                        st.warning("Bitte Isomaß eingeben.")
+                        st.warning("Isomaß fehlt.")
 
         with col_storage:
             st.markdown("### 📋 Gespeicherte Schnitte")
-            
             if not st.session_state.cut_list_storage:
                 st.info("Noch keine Schnitte gespeichert.")
             else:
-                # Liste als DataFrame aufbereiten
-                data = [{
-                    "ID": e.id,
-                    "ISO": e.iso_ref,
-                    "Spool": e.spool_nr,
-                    "Iso-Maß": e.raw_length,
-                    "Säge-Maß": e.cut_length,
-                    "Info": e.details
-                } for e in st.session_state.cut_list_storage]
-                
+                data = [{"ID": e.id, "ISO": e.iso_ref, "Spool": e.spool_nr, "Iso-Maß": e.raw_length, "Säge-Maß": e.cut_length, "Info": e.details} for e in st.session_state.cut_list_storage]
                 df_cuts = pd.DataFrame(data)
+                st.dataframe(df_cuts, use_container_width=True, hide_index=True, column_config={"Säge-Maß": st.column_config.NumberColumn("Säge-Maß (mm)", format="%.1f mm")})
                 
-                # Tabelle anzeigen
-                st.dataframe(
-                    df_cuts, 
-                    use_container_width=True, 
-                    hide_index=True,
-                    column_config={
-                        "Säge-Maß": st.column_config.NumberColumn(
-                            "Säge-Maß (mm)",
-                            format="%.1f mm",
-                        )
-                    }
-                )
-                
-                # Aktionen für die Liste
                 act_c1, act_c2 = st.columns(2)
-                
-                if act_c1.button("Letzten Eintrag löschen"):
+                if act_c1.button("Letzten löschen"):
                     st.session_state.cut_list_storage.pop()
                     st.rerun()
-                    
-                if act_c2.button("Liste komplett leeren"):
+                if act_c2.button("Liste leeren"):
                     st.session_state.cut_list_storage = []
                     st.session_state.next_id = 1
                     st.rerun()
-
-                # CSV Download
+                
                 csv = df_cuts.to_csv(index=False, sep=';', decimal=',').encode('utf-8')
-                st.download_button(
-                    label="📥 Liste Exportieren (CSV)",
-                    data=csv,
-                    file_name=f"Saegeliste_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                    mime="text/csv",
-                    type="primary"
-                )
+                st.download_button("📥 Liste Exportieren (CSV)", csv, f"Saegeliste_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv")
 
-    # --- SUB-TAB: BOGEN ---
     with tab_bend:
         c_b1, c_b2 = st.columns(2)
         angle = c_b1.slider("Winkel", 0, 90, 45)
-        
         row = calc.get_row_by_dn(current_dn)
         radius = float(row['Radius_BA3'])
         da = float(row['D_Aussen'])
-        
-        # Berechnung
         vorbau = radius * math.tan(math.radians(angle / 2))
         len_mid = radius * math.radians(angle)
         len_out = (radius + da/2) * math.radians(angle)
         len_in = (radius - da/2) * math.radians(angle)
-        
         c_b2.markdown(f"<div class='info-box'>Vorbau (Z-Maß): <b>{vorbau:.1f} mm</b></div>", unsafe_allow_html=True)
-        
         met1, met2, met3 = st.columns(3)
         met1.metric("Bogenlänge Außen", f"{len_out:.1f} mm")
         met2.metric("Bogenlänge Mitte", f"{len_mid:.1f} mm")
         met3.metric("Bogenlänge Innen", f"{len_in:.1f} mm")
 
-    # --- SUB-TAB: STUTZEN ---
     with tab_branch:
         c_s1, c_s2 = st.columns(2)
         dn_stub = c_s1.selectbox("DN Stutzen", df['DN'], index=5)
         dn_main = c_s2.selectbox("DN Hauptrohr", df['DN'], index=8)
-        
         if c_s1.button("Berechnen 📐"):
             try:
                 df_res, fig = calc.calculate_stutzen_coords(dn_main, dn_stub)
                 st.pyplot(fig)
-                with st.expander("Schablonen-Daten anzeigen"):
+                with st.expander("Schablonen-Daten"):
                     st.table(df_res)
             except ValueError as e:
                 st.error(f"Fehler: {e}")
 
 def render_tab_logbook(df_pipe: pd.DataFrame):
-    st.markdown("## Digitales Rohrbuch")
+    st.markdown("## 📋 Digitales Rohrbuch V2.0")
     
     with st.expander("📝 Neuen Eintrag erfassen", expanded=True):
-        with st.form("rohrbuch_entry"):
-            c1, c2, c3 = st.columns(3)
-            iso = c1.text_input("ISO-Nr.")
-            naht = c2.text_input("Naht-Nr.")
-            datum = c3.date_input("Datum")
+        with st.form("rohrbuch_entry_v2", clear_on_submit=False):
+            st.caption("Naht-Daten")
+            r1c1, r1c2, r1c3 = st.columns(3)
+            iso = r1c1.text_input("ISO / Zeichnungs-Nr.", key="rb_iso")
+            naht = r1c2.text_input("Naht-Nr.", key="rb_naht")
+            datum = r1c3.date_input("Schweißdatum")
             
-            c4, c5, c6 = st.columns(3)
-            dim = c4.selectbox("Dimension", df_pipe['DN'], key="rb_dn")
-            bauteil = c5.selectbox("Bauteil", ["Naht", "Bogen", "Flansch", "Passstück"])
-            laenge = c6.number_input("Länge (mm)", value=0.0)
+            st.caption("Material & Bauteil")
+            r2c1, r2c2, r2c3 = st.columns(3)
+            bauteil_liste = ["Rohr (Längsnaht)", "Rohrstoß", "Bogen 90°", "Bogen 45°", "T-Stück", "Reduzierung", "Flansch (Vorschweiß)", "Flansch (Blind)", "Muffe", "Nippel", "Olet/Stutzen"]
+            bauteil = r2c1.selectbox("Bauteil / Komponente", bauteil_liste)
+            dim = r2c2.selectbox("Dimension", df_pipe['DN'], index=8)
+            laenge = r2c3.number_input("Länge/Menge (falls relevant)", value=0.0, step=10.0)
             
-            c7, c8 = st.columns(2)
-            charge = c7.text_input("Charge")
-            schweisser = c8.text_input("Schweißer ID")
+            st.caption("Qualitätssicherung")
+            r3c1, r3c2, r3c3 = st.columns(3)
+            charge = r3c1.text_input("Charge (Material)")
+            apz = r3c2.text_input("Charge APZ / Zeugnis")
+            schweisser = r3c3.text_input("Schweißer Stempel")
             
-            if st.form_submit_button("Speichern 💾"):
-                DatabaseRepository.add_entry((iso, naht, datum.strftime("%Y-%m-%d"), f"DN {dim}", bauteil, laenge, charge, schweisser))
-                st.success("Gespeichert!")
-                st.rerun()
+            if st.form_submit_button("Naht Speichern 💾", type="primary"):
+                if iso and naht and schweisser:
+                    data_dict = {
+                        "iso": iso, "naht": naht, "datum": datum.strftime("%d.%m.%Y"),
+                        "dimension": f"DN {dim}", "bauteil": bauteil, "laenge": laenge,
+                        "charge": charge, "charge_apz": apz, "schweisser": schweisser
+                    }
+                    DatabaseRepository.add_entry(data_dict)
+                    st.success(f"Naht {naht} (ISO {iso}) gespeichert.")
+                    st.rerun()
+                else:
+                    st.warning("Bitte mindestens ISO, Naht-Nr. und Schweißer angeben.")
 
-    st.markdown("### Historie")
+    st.divider()
     df_log = DatabaseRepository.get_all()
-    st.dataframe(df_log, use_container_width=True, hide_index=True)
     
-    if not df_log.empty:
-        csv = df_log.to_csv(index=False).encode('utf-8')
-        st.download_button("Download CSV", csv, "rohrbuch.csv", "text/csv")
+    if df_log.empty:
+        st.info("Das Rohrbuch ist leer.")
+    else:
+        col_ex1, col_ex2, col_spacer = st.columns([1, 1, 4])
+        file_suffix = datetime.now().strftime('%Y%m%d')
+        col_ex1.download_button("📥 Excel Export", data=Exporter.to_excel(df_log), file_name=f"Rohrbuch_{file_suffix}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        
+        if PDF_AVAILABLE:
+            col_ex2.download_button("📄 PDF Export", data=Exporter.to_pdf(df_log), file_name=f"Rohrbuch_{file_suffix}.pdf", mime="application/pdf")
+        else:
+            col_ex2.warning("PDF-Export inaktiv (FPDF fehlt)")
+
+        st.markdown("### Aktuelle Einträge verwalten")
+        st.caption("Nutze die Checkbox 'Löschen', um Einträge zu markieren.")
+        
+        edited_df = st.data_editor(
+            df_log,
+            column_config={
+                "Löschen": st.column_config.CheckboxColumn("Auswahl", help="Zum Löschen markieren", default=False),
+                "id": None, 
+            },
+            disabled=["iso", "naht", "datum", "dimension", "bauteil", "laenge", "charge", "charge_apz", "schweisser"],
+            hide_index=True,
+            use_container_width=True,
+            key="editor_logbook"
+        )
+        
+        rows_to_delete = edited_df[edited_df['Löschen'] == True]
+        if not rows_to_delete.empty:
+            count = len(rows_to_delete)
+            st.warning(f"{count} Eintrag/Einträge zum Löschen markiert.")
+            col_del1, col_del2 = st.columns([1, 4])
+            if col_del1.button(f"🗑️ {count} löschen", type="primary"):
+                ids_list = rows_to_delete['id'].tolist()
+                DatabaseRepository.delete_entries(ids_list)
+                st.success("Gelöscht!")
+                st.rerun()
 
 # -----------------------------------------------------------------------------
 # 5. MAIN APP EXECUTION
 # -----------------------------------------------------------------------------
 
 def main():
-    # Init
     DatabaseRepository.init_db()
     df_pipe = get_pipe_data()
     calc = PipeCalculator(df_pipe)
     
-    # Session State initialisieren
     if 'fitting_list' not in st.session_state:
         st.session_state.fitting_list = []
     
-    # Sidebar
     dn_sel, pn_sel = render_sidebar(df_pipe)
 
-    # Main Content
     tab1, tab2, tab3 = st.tabs(["📘 Tabellenbuch", "🛠️ Werkstatt & Zuschnitt", "📋 Rohrbuch"])
     
     with tab1:
         render_tab_handbook(calc, dn_sel, pn_sel)
-        
     with tab2:
         render_tab_workshop(calc, df_pipe, dn_sel, pn_sel)
-        
     with tab3:
         render_tab_logbook(df_pipe)
 
