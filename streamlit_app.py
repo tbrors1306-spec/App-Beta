@@ -5,7 +5,7 @@ import sqlite3
 import logging
 from dataclasses import dataclass, asdict
 from io import BytesIO
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from datetime import datetime
 import matplotlib.pyplot as plt
 
@@ -21,22 +21,22 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V4_1")
+logger = logging.getLogger("PipeCraft_Pro_V5")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 4.1",
+    page_title="Rohrbau Profi 5.0",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Modernes CSS für bessere Lesbarkeit
+# Modernes CSS (Vereint Styles aus V2 und V4)
 st.markdown("""
 <style>
     .main { background-color: #f8f9fa; }
     h1, h2, h3 { color: #1e293b; font-family: 'Segoe UI', sans-serif; }
     
-    /* Ergebnis Box (Grün) */
+    /* Ergebnis Box (Grün) - aus V4 */
     .success-box {
         padding: 20px;
         background-color: #dcfce7;
@@ -48,7 +48,7 @@ st.markdown("""
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
     
-    /* Fehler Box (Rot) */
+    /* Fehler Box (Rot) - aus V4 */
     .error-box {
         padding: 20px;
         background-color: #fee2e2;
@@ -59,18 +59,27 @@ st.markdown("""
         text-align: center;
     }
 
-    /* Container Styling */
-    .calculation-area {
-        background-color: white;
-        padding: 20px;
-        border-radius: 10px;
+    /* Info Box (Blau) - aus V1 */
+    .info-box {
+        padding: 15px;
+        background-color: #eff6ff;
+        color: #1e40af;
+        border-radius: 6px;
+        border-left: 4px solid #3b82f6;
+        margin-bottom: 10px;
+    }
+
+    div[data-testid="stMetric"] {
+        background-color: #ffffff;
         border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 10px;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 2. DATEN-SCHICHT
+# 2. DATEN-SCHICHT (DATA LAYER)
 # -----------------------------------------------------------------------------
 
 @st.cache_data
@@ -107,26 +116,29 @@ SCHRAUBEN_DB = {
 DB_NAME = "rohrbau_profi.db"
 
 class DatabaseRepository:
-    """Verwaltet Datenbankoperationen."""
+    """Verwaltet Datenbankoperationen (RESTORED V2.1 Logic)."""
     
     @staticmethod
     def init_db():
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
-            # Rohrbuch Tabelle (Doku)
+            # Rohrbuch Tabelle erstellen
             c.execute('''CREATE TABLE IF NOT EXISTS rohrbuch (
                         id INTEGER PRIMARY KEY AUTOINCREMENT, 
                         iso TEXT, naht TEXT, datum TEXT, 
                         dimension TEXT, bauteil TEXT, laenge REAL, 
                         charge TEXT, charge_apz TEXT, schweisser TEXT)''')
             
-            # Migration APZ Spalte
+            # --- MIGRATION CHECK (V2.1 Feature) ---
+            # Prüft ob 'charge_apz' existiert, wenn nicht, wird sie hinzugefügt
             c.execute("PRAGMA table_info(rohrbuch)")
             cols = [info[1] for info in c.fetchall()]
             if 'charge_apz' not in cols:
                 try:
                     c.execute("ALTER TABLE rohrbuch ADD COLUMN charge_apz TEXT")
-                except: pass
+                    logging.info("DB Migration: Spalte charge_apz hinzugefügt.")
+                except Exception as e: 
+                    logging.error(f"Migration fehlgeschlagen: {e}")
             conn.commit()
 
     @staticmethod
@@ -143,9 +155,12 @@ class DatabaseRepository:
     def get_all() -> pd.DataFrame:
         with sqlite3.connect(DB_NAME) as conn:
             df = pd.read_sql_query("SELECT * FROM rohrbuch ORDER BY id DESC", conn)
+            # Füge Spalte für Editor-Handling hinzu
             if not df.empty: df['Löschen'] = False 
             else: 
-                df = pd.DataFrame(columns=["id", "iso", "naht", "datum", "dimension", "bauteil", "laenge", "charge", "charge_apz", "schweisser", "Löschen"])
+                # Leeres DF Struktur sicherstellen
+                cols = ["id", "iso", "naht", "datum", "dimension", "bauteil", "laenge", "charge", "charge_apz", "schweisser", "Löschen"]
+                df = pd.DataFrame(columns=cols)
             return df
 
     @staticmethod
@@ -157,13 +172,13 @@ class DatabaseRepository:
             conn.commit()
 
 # -----------------------------------------------------------------------------
-# 3. HELPER & LOGIK
+# 3. HELPER, LOGIK & GEOMETRIE
 # -----------------------------------------------------------------------------
 
 @dataclass
 class FittingItem:
-    """Ein Bauteil in der AKTUELLEN Berechnung."""
-    id: str # Unique ID für Löschung im UI
+    """Säge V4: Ein Bauteil in der AKTUELLEN Berechnung."""
+    id: str
     name: str
     count: int
     deduction_single: float
@@ -175,7 +190,7 @@ class FittingItem:
 
 @dataclass
 class SavedCut:
-    """Ein fertig berechneter und gespeicherter Schnitt."""
+    """Säge V4: Ein gespeicherter Schnitt."""
     id: int
     raw_length: float
     cut_length: float
@@ -183,6 +198,8 @@ class SavedCut:
     timestamp: str
 
 class PipeCalculator:
+    """Zentrale Berechnungsklasse (Vereint V1 und V4 Logik)."""
+    
     def __init__(self, df: pd.DataFrame):
         self.df = df
 
@@ -190,6 +207,7 @@ class PipeCalculator:
         row = self.df[self.df['DN'] == dn]
         return row.iloc[0] if not row.empty else self.df.iloc[0]
 
+    # --- SÄGE LOGIK (V4) ---
     def get_deduction(self, f_type: str, dn: int, pn: str, angle: float = 90.0) -> float:
         row = self.get_row(dn)
         suffix = "_16" if pn == "PN 16" else "_10"
@@ -201,214 +219,276 @@ class PipeCalculator:
         if "Reduzierung" in f_type: return float(row['Red_Laenge_L'])
         return 0.0
 
+    # --- STUTZEN LOGIK (RESTORED V1) ---
+    def calculate_stutzen_coords(self, dn_haupt: int, dn_stutzen: int) -> pd.DataFrame:
+        """Berechnet nur die Koordinaten-Tabelle für Stutzen."""
+        r_main = self.get_row(dn_haupt)['D_Aussen'] / 2
+        r_stub = self.get_row(dn_stutzen)['D_Aussen'] / 2
+
+        if r_stub > r_main:
+            raise ValueError(f"Stutzen DN {dn_stutzen} ist größer als Hauptrohr DN {dn_haupt}!")
+
+        table_data = []
+        for angle in [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 180]:
+            # Verschneidungsformel
+            try:
+                term = r_stub * math.sin(math.radians(angle))
+                t_val = r_main - math.sqrt(r_main**2 - term**2)
+            except ValueError:
+                t_val = 0 # Sollte durch Check oben abgefangen sein, aber sicher ist sicher
+            
+            u_val = (r_stub * 2 * math.pi) * (angle / 360)
+            table_data.append({
+                "Winkel": f"{angle}°",
+                "Tiefe (mm)": round(t_val, 1),
+                "Umfang (mm)": round(u_val, 1)
+            })
+        return pd.DataFrame(table_data)
+
+class Visualizer:
+    """Klasse für Plots (RESTORED V1)."""
+    
+    @staticmethod
+    def plot_stutzen(dn_haupt: int, dn_stutzen: int, df_pipe: pd.DataFrame) -> plt.Figure:
+        # Daten holen
+        row_h = df_pipe[df_pipe['DN'] == dn_haupt].iloc[0]
+        row_s = df_pipe[df_pipe['DN'] == dn_stutzen].iloc[0]
+        r_main = row_h['D_Aussen'] / 2
+        r_stub = row_s['D_Aussen'] / 2
+
+        if r_stub > r_main: return None # Fehler wird im UI gefangen
+
+        angles = range(0, 361, 5)
+        depths = []
+        for a in angles:
+            try:
+                term = r_stub * math.sin(math.radians(a))
+                val = r_main - math.sqrt(r_main**2 - term**2)
+                depths.append(val)
+            except:
+                depths.append(0)
+
+        fig, ax = plt.subplots(figsize=(8, 2))
+        ax.plot(angles, depths, color='#3b82f6', linewidth=2)
+        ax.fill_between(angles, depths, color='#eff6ff', alpha=0.5)
+        ax.set_xlim(0, 360)
+        ax.set_ylabel("Tiefe (mm)")
+        ax.set_xlabel("Abwicklung (°)")
+        ax.grid(True, linestyle='--', alpha=0.5)
+        plt.tight_layout()
+        return fig
+
 class Exporter:
+    """Export Logik (RESTORED V2.1 + V4 Fixes)."""
     @staticmethod
     def to_excel(df):
         output = BytesIO()
         export_df = df.drop(columns=['Löschen', 'id'], errors='ignore')
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            export_df.to_excel(writer, index=False, sheet_name='Rohrbuch')
+            export_df.to_excel(writer, index=False, sheet_name='Daten')
         return output.getvalue()
 
     @staticmethod
-    def to_pdf(df):
+    def to_pdf(df, title="Rohrbuch"):
         if not PDF_AVAILABLE: return b""
         pdf = FPDF(orientation='L', unit='mm', format='A4')
         pdf.add_page()
         pdf.set_font("Arial", 'B', 16)
-        pdf.cell(0, 10, f"Rohrbuch - {datetime.now().strftime('%d.%m.%Y')}", 0, 1, 'C')
+        pdf.cell(0, 10, f"{title} - {datetime.now().strftime('%d.%m.%Y')}", 0, 1, 'C')
         pdf.ln(5)
-        pdf.set_font("Arial", size=8)
         
+        # Spalten und Breiten definieren (für Rohrbuch optimiert)
         cols = ["ISO", "Naht", "Datum", "DN", "Bauteil", "Charge", "APZ", "Schweißer"]
-        for c in cols: pdf.cell(30, 8, c, 1)
+        widths = [30, 20, 25, 20, 40, 35, 35, 30]
+        
+        pdf.set_font("Arial", 'B', 8)
+        for i, c in enumerate(cols): 
+            pdf.cell(widths[i], 8, c, 1)
         pdf.ln()
         
+        pdf.set_font("Arial", size=8)
         export_df = df.drop(columns=['Löschen', 'id'], errors='ignore')
+        
         for _, row in export_df.iterrows():
-            line = [str(row.get(c.lower(), ''))[:18] for c in cols] # Mapping vereinfacht
-            # Spezifisches Mapping für keys die nicht exakt matchen (iso vs ISO)
-            line[0] = str(row.get('iso',''))
-            line[1] = str(row.get('naht',''))
-            line[6] = str(row.get('charge_apz',''))
+            # Robustes Mapping: Sucht Keys case-insensitive
+            def get_val(k):
+                # Versuch exakter Match
+                if k.lower() in row: return str(row[k.lower()])
+                # Versuch spezifische Mappings aus V2
+                if k == "APZ" and 'charge_apz' in row: return str(row['charge_apz'])
+                if k == "ISO" and 'iso' in row: return str(row['iso'])
+                if k == "DN" and 'dimension' in row: return str(row['dimension'])
+                return ""
+
+            vals = [get_val(c) for c in cols]
             
-            for item in line:
-                try: pdf.cell(30, 8, item.encode('latin-1','replace').decode('latin-1'), 1)
-                except: pdf.cell(30, 8, "?", 1)
+            for i, val in enumerate(vals):
+                try: 
+                    safe_val = val[:20].encode('latin-1','replace').decode('latin-1')
+                    pdf.cell(widths[i], 8, safe_val, 1)
+                except: 
+                    pdf.cell(widths[i], 8, "?", 1)
             pdf.ln()
+            
         return pdf.output(dest='S').encode('latin-1')
 
 # -----------------------------------------------------------------------------
-# 4. UI SEITEN
+# 4. UI SEITEN (TABS)
 # -----------------------------------------------------------------------------
 
-def render_tab_workshop(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn: str):
-    st.subheader("🪚 Smart Säge V4.1")
+def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn: str):
+    """Der Code aus V4.1 (korrigiert)."""
+    st.subheader("🪚 Smarte Säge 5.0")
     
-    # --- FEHLERBEHEBUNG FÜR SESSION STATE ---
-    # Falls alte Objekte ohne 'id' im Speicher liegen, Liste bereinigen um Absturz zu verhindern.
+    # State Healing
     if 'fitting_list' in st.session_state and st.session_state.fitting_list:
-        try:
-            # Test: Hat das erste Objekt eine ID?
-            _ = st.session_state.fitting_list[0].id
-        except AttributeError:
-            st.session_state.fitting_list = []
-            st.warning("Versions-Update: Alte Berechnungsdaten wurden zurückgesetzt.")
-            st.rerun()
+        try: _ = st.session_state.fitting_list[0].id
+        except AttributeError: st.session_state.fitting_list = []
 
-    # State Init
     if 'fitting_list' not in st.session_state: st.session_state.fitting_list = []
     if 'saved_cuts' not in st.session_state: st.session_state.saved_cuts = []
     if 'next_cut_id' not in st.session_state: st.session_state.next_cut_id = 1
 
-    # LAYOUT: Links Berechnung, Rechts Gespeicherte Liste
-    col_calc, col_saved = st.columns([1.5, 1.5])
+    c_calc, c_list = st.columns([1.5, 1.5])
 
-    # --- LINKE SPALTE: BERECHNUNG ---
-    with col_calc:
+    with c_calc:
         with st.container(border=True):
-            st.markdown("#### 1. Zuschnitt berechnen")
+            st.markdown("#### 1. Zuschnitt")
+            raw_len = st.number_input("Schnittmaß aus Plan [mm]", min_value=0.0, step=10.0, format="%.1f")
             
-            # A) Basisdaten
-            raw_len = st.number_input("Rohrlänge (Schnittmaß aus Plan) [mm]", min_value=0.0, step=10.0, format="%.1f")
-            
-            col_g1, col_g2, col_g3 = st.columns(3)
-            gap = col_g1.number_input("Wurzelspalt (mm)", value=3.0, step=0.5)
-            dicht_anz = col_g2.number_input("Anz. Dichtungen", 0, 5, 0)
-            dicht_thk = col_g3.number_input("Dicke (mm)", 0.0, 5.0, 2.0, disabled=(dicht_anz==0))
+            cg1, cg2, cg3 = st.columns(3)
+            gap = cg1.number_input("Wurzelspalt (mm)", value=3.0, step=0.5)
+            dicht_anz = cg2.number_input("Anz. Dicht.", 0, 5, 0)
+            dicht_thk = cg3.number_input("Dicke (mm)", 0.0, 5.0, 2.0, disabled=(dicht_anz==0))
             
             st.divider()
-            
-            # B) Bauteile Hinzufügen
             st.caption("Bauteil abziehen:")
-            c_add1, c_add2, c_add3, c_add4 = st.columns([2, 1.5, 1, 1])
-            f_type = c_add1.selectbox("Typ", ["Bogen 90° (BA3)", "Bogen (Zuschnitt)", "Flansch (Vorschweiß)", "T-Stück", "Reduzierung"], label_visibility="collapsed")
-            f_dn = c_add2.selectbox("DN", df['DN'], index=df['DN'].tolist().index(current_dn), label_visibility="collapsed")
-            f_cnt = c_add3.number_input("Anz.", 1, 10, 1, label_visibility="collapsed")
+            ca1, ca2, ca3, ca4 = st.columns([2, 1.5, 1, 1])
+            f_type = ca1.selectbox("Typ", ["Bogen 90° (BA3)", "Bogen (Zuschnitt)", "Flansch (Vorschweiß)", "T-Stück", "Reduzierung"], label_visibility="collapsed")
+            f_dn = ca2.selectbox("DN", df['DN'], index=df['DN'].tolist().index(current_dn), label_visibility="collapsed")
+            f_cnt = ca3.number_input("Anz.", 1, 10, 1, label_visibility="collapsed")
             
-            # Zuschnittswinkel nur anzeigen wenn nötig
             f_ang = 90.0
-            if "Zuschnitt" in f_type:
-                f_ang = st.slider("Winkel (°)", 0, 90, 45)
+            if "Zuschnitt" in f_type: f_ang = st.slider("Winkel", 0, 90, 45)
 
-            if c_add4.button("➕", type="primary", help="Zur aktuellen Berechnung hinzufügen"):
-                deduction = calc.get_deduction(f_type, f_dn, pn, f_ang)
-                name = f"{f_type} DN{f_dn}" + (f" ({f_ang}°)" if "Zuschnitt" in f_type else "")
-                # Unique ID generieren basierend auf Zeit, damit man einzelne Items löschen kann
-                unique_id = f"{len(st.session_state.fitting_list)}_{datetime.now().timestamp()}"
-                st.session_state.fitting_list.append(FittingItem(unique_id, name, f_cnt, deduction, f_dn))
+            if ca4.button("➕", type="primary"):
+                deduct = calc.get_deduction(f_type, f_dn, pn, f_ang)
+                uid = f"{len(st.session_state.fitting_list)}_{datetime.now().timestamp()}"
+                nm = f"{f_type} DN{f_dn}" + (f" ({f_ang}°)" if "Zuschnitt" in f_type else "")
+                st.session_state.fitting_list.append(FittingItem(uid, nm, f_cnt, deduct, f_dn))
                 st.rerun()
 
-            # C) LIVE LISTE (Warenkorb)
             if st.session_state.fitting_list:
-                st.markdown("###### Aktuelle Abzüge:")
-                
-                for idx, item in enumerate(st.session_state.fitting_list):
-                    c_row1, c_row2, c_row3 = st.columns([3, 1.5, 0.5])
-                    c_row1.text(f"{item.count}x {item.name}")
-                    c_row2.text(f"-{item.total_deduction:.1f} mm")
-                    # Hier war der Fehler: Zugriff auf item.id, wenn item noch vom alten Typ war
-                    if c_row3.button("🗑️", key=f"del_{item.id}"):
-                        st.session_state.fitting_list.pop(idx)
+                st.markdown("###### Liste:")
+                for i, item in enumerate(st.session_state.fitting_list):
+                    cr1, cr2, cr3 = st.columns([3, 1.5, 0.5])
+                    cr1.text(f"{item.count}x {item.name}")
+                    cr2.text(f"-{item.total_deduction:.1f}")
+                    if cr3.button("x", key=f"d_{item.id}"):
+                        st.session_state.fitting_list.pop(i)
                         st.rerun()
-                
-                if st.button("Alle Abzüge leeren", type="secondary"):
+                if st.button("Alles löschen", type="secondary"):
                     st.session_state.fitting_list = []
                     st.rerun()
 
-            # D) ERGEBNIS RECHNUNG
-            sum_fittings = sum(i.total_deduction for i in st.session_state.fitting_list)
-            # Spalte: Wir nehmen an 1 Spalt pro Bauteil + 1 (oder einfach Manuell) -> Hier vereinfacht:
-            # Anzahl Bauteile = Anzahl Spalte (Näherung). Wenn Fittingliste leer, aber Gap > 0, ziehen wir nix ab
-            count_fittings = sum(i.count for i in st.session_state.fitting_list)
-            sum_gaps = count_fittings * gap 
-            sum_dicht = dicht_anz * dicht_thk
-            
-            total_deduct = sum_fittings + sum_gaps + sum_dicht
-            final_cut = raw_len - total_deduct
-            
+            # Calc
+            sum_fit = sum(i.total_deduction for i in st.session_state.fitting_list)
+            sum_gap = sum(i.count for i in st.session_state.fitting_list) * gap
+            sum_gskt = dicht_anz * dicht_thk
+            total = sum_fit + sum_gap + sum_gskt
+            final = raw_len - total
+
             st.divider()
-            
-            if final_cut < 0:
-                st.markdown(f"<div class='error-box'>ACHTUNG: Negativmaß!<br>Abzug ({total_deduct:.1f}) > Rohr ({raw_len:.1f})</div>", unsafe_allow_html=True)
-                st.warning("Bitte Liste der Abzüge prüfen und korrigieren.")
+            if final < 0:
+                st.markdown(f"<div class='error-box'>Negativmaß!<br>{final:.1f} mm</div>", unsafe_allow_html=True)
             else:
-                st.markdown(f"<div class='success-box'>Sägelänge<br><span style='font-size:2.5em; font-weight:bold'>{final_cut:.1f} mm</span></div>", unsafe_allow_html=True)
-                st.caption(f"Details: Bauteile -{sum_fittings:.1f} | Spalte -{sum_gaps:.1f} | Dichtungen -{sum_dicht:.1f}")
+                st.markdown(f"<div class='success-box'>Sägelänge<br><b>{final:.1f} mm</b></div>", unsafe_allow_html=True)
+                st.caption(f"Details: Teile -{sum_fit:.1f} | Spalt -{sum_gap:.1f} | Dicht. -{sum_gskt:.1f}")
                 
-                # E) Speichern
-                if st.button("💾 Schnitt in Liste speichern", type="primary", use_container_width=True):
+                if st.button("💾 Speichern", type="primary", use_container_width=True):
                     if raw_len > 0:
-                        detail_txt = f"{count_fittings} Teile, {dicht_anz} Dicht."
-                        new_cut = SavedCut(
-                            st.session_state.next_cut_id, raw_len, final_cut, detail_txt, datetime.now().strftime("%H:%M")
-                        )
-                        st.session_state.saved_cuts.append(new_cut)
+                        st.session_state.saved_cuts.append(SavedCut(st.session_state.next_cut_id, raw_len, final, f"{len(st.session_state.fitting_list)} Teile", datetime.now().strftime("%H:%M")))
                         st.session_state.next_cut_id += 1
-                        # Reset Calculation Area
-                        st.session_state.fitting_list = [] 
+                        st.session_state.fitting_list = []
                         st.rerun()
 
-    # --- RECHTE SPALTE: GESPEICHERTE LISTE ---
-    with col_saved:
-        st.markdown("#### 📋 Fertige Schnittliste")
-        if not st.session_state.saved_cuts:
-            st.info("Noch keine Schnitte gespeichert.")
-        else:
-            # Dataframe für Anzeige
+    with c_list:
+        st.markdown("#### 📋 Gespeichert")
+        if st.session_state.saved_cuts:
             data = [asdict(c) for c in st.session_state.saved_cuts]
-            df_show = pd.DataFrame(data).drop(columns=['id'])
-            df_show.rename(columns={'raw_length': 'Rohr', 'cut_length': 'Schnitt', 'details': 'Info', 'timestamp': 'Zeit'}, inplace=True)
-            
-            st.dataframe(df_show, use_container_width=True, hide_index=True)
-            
-            col_act1, col_act2 = st.columns(2)
-            if col_act1.button("Letzten löschen"):
-                st.session_state.saved_cuts.pop()
-                st.rerun()
-            if col_act2.button("Liste leeren"):
+            df_s = pd.DataFrame(data).drop(columns=['id']).rename(columns={'raw_length': 'Rohr', 'cut_length': 'Schnitt'})
+            st.dataframe(df_s, use_container_width=True, hide_index=True)
+            if st.button("Liste leeren"):
                 st.session_state.saved_cuts = []
                 st.rerun()
+
+def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
+    """RESTAURIERTE Geometrie Tools (Stutzen & Bogen)."""
+    st.subheader("📐 Geometrie & Schablonen")
+    
+    t_stutz, t_bogen = st.tabs(["🔥 Stutzen-Schablone", "🔄 Bogen-Rechner"])
+    
+    with t_stutz:
+        c1, c2 = st.columns(2)
+        dn_stub = c1.selectbox("DN Stutzen", df['DN'], index=5, key="gs_dn1")
+        dn_main = c2.selectbox("DN Hauptrohr", df['DN'], index=8, key="gs_dn2")
+        
+        if c1.button("Kurve berechnen"):
+            try:
+                # Tabelle berechnen
+                df_coords = calc.calculate_stutzen_coords(dn_main, dn_stub)
+                # Plotten
+                fig = Visualizer.plot_stutzen(dn_main, dn_stub, df)
                 
-            # Export CSV
-            csv = df_show.to_csv(sep=";", decimal=",", index=False).encode('utf-8')
-            st.download_button("📥 Liste als CSV", csv, "saegeliste.csv", "text/csv", use_container_width=True)
+                c_res1, c_res2 = st.columns([1, 2])
+                with c_res1:
+                    st.table(df_coords)
+                with c_res2:
+                    st.pyplot(fig)
+            except ValueError as e:
+                st.error(str(e))
 
-def render_tab_handbook(calc, dn, pn):
-    row = calc.get_row(dn)
-    suffix = "_16" if pn == "PN 16" else "_10"
-    st.subheader(f"Technische Daten DN {dn} ({pn})")
-    
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Außen-Ø", f"{row['D_Aussen']} mm")
-    c1.metric("Radius (BA3)", f"{row['Radius_BA3']} mm")
-    
-    c2.metric("Blattstärke", f"{row[f'Flansch_b{suffix}']} mm")
-    c2.metric("Lochkreis", f"{row[f'LK_k{suffix}']} mm")
-    
-    c3.info(f"Schrauben: {row[f'Lochzahl{suffix}']}x {row[f'Schraube_M{suffix}']}")
-    c3.text(f"Länge (F-F): {row[f'L_Fest{suffix}']} mm")
+    with t_bogen:
+        cb1, cb2 = st.columns(2)
+        angle = cb1.slider("Winkel (°)", 0, 90, 45, key="gb_ang")
+        dn_b = cb2.selectbox("DN Bogen", df['DN'], index=6, key="gb_dn")
+        
+        row = calc.get_row(dn_b)
+        r = float(row['Radius_BA3'])
+        da = float(row['D_Aussen'])
+        
+        vorbau = r * math.tan(math.radians(angle/2))
+        bogen_a = (r + da/2) * math.radians(angle)
+        bogen_i = (r - da/2) * math.radians(angle)
+        
+        st.markdown(f"<div class='info-box'>Vorbau (Z-Maß): <b>{vorbau:.1f} mm</b></div>", unsafe_allow_html=True)
+        cm1, cm2 = st.columns(2)
+        cm1.metric("Bogen Außen (Rücken)", f"{bogen_a:.1f} mm")
+        cm2.metric("Bogen Innen (Bauch)", f"{bogen_i:.1f} mm")
 
-def render_tab_logbook(df_pipe):
-    st.subheader("Digitales Rohrbuch")
+def render_logbook(df_pipe: pd.DataFrame):
+    """RESTAURIERTES V2.1 Rohrbuch (Bulk Delete + APZ)."""
+    st.subheader("📝 Digitales Rohrbuch")
     
     with st.expander("Eintrag hinzufügen", expanded=True):
-        with st.form("new_entry", clear_on_submit=False):
+        with st.form("lb_new"):
             c1, c2, c3 = st.columns(3)
             iso = c1.text_input("ISO")
             naht = c2.text_input("Naht")
             dat = c3.date_input("Datum")
             
             c4, c5, c6 = st.columns(3)
-            bt = c4.selectbox("Bauteil", ["Naht", "Bogen", "Flansch", "Passstück"])
-            dn = c5.selectbox("DN", df_pipe['DN'], index=8)
-            ch = c6.text_input("Charge")
+            # Bereinigte Liste aus V2
+            types = ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Stutzen", "Muffe"]
+            bt = c4.selectbox("Bauteil", types)
+            dn = c5.selectbox("Dimension", df_pipe['DN'], index=8)
+            ch = c6.text_input("Charge (Rohr/Fitting)")
             
             c7, c8 = st.columns(2)
-            apz = c7.text_input("APZ")
+            apz = c7.text_input("APZ / Zeugnis")
             sch = c8.text_input("Schweißer")
             
-            if st.form_submit_button("Speichern", type="primary"):
+            if st.form_submit_button("Speichern 💾", type="primary"):
                 DatabaseRepository.add_entry({
                     "iso": iso, "naht": naht, "datum": dat.strftime("%d.%m.%Y"),
                     "dimension": f"DN {dn}", "bauteil": bt, "laenge": 0,
@@ -417,22 +497,43 @@ def render_tab_logbook(df_pipe):
                 st.success("Gespeichert")
                 st.rerun()
 
+    st.divider()
     df = DatabaseRepository.get_all()
+    
     if not df.empty:
-        edited = st.data_editor(df, key="editor", hide_index=True, use_container_width=True, 
-                                column_config={"Löschen": st.column_config.CheckboxColumn(default=False)})
+        # Export Buttons
+        ce1, ce2, _ = st.columns([1,1,3])
+        ce1.download_button("📥 Excel", Exporter.to_excel(df), "rohrbuch.xlsx")
+        if PDF_AVAILABLE:
+            ce2.download_button("📄 PDF", Exporter.to_pdf(df), "rohrbuch.pdf")
+            
+        # Bulk Delete Editor
+        st.caption("Zum Löschen Checkbox aktivieren und Button unten klicken:")
+        edited = st.data_editor(
+            df, 
+            hide_index=True, 
+            column_config={"Löschen": st.column_config.CheckboxColumn(default=False)},
+            disabled=["id", "iso", "naht", "datum", "dimension", "bauteil", "charge", "charge_apz", "schweisser"],
+            use_container_width=True
+        )
         
         to_del = edited[edited['Löschen'] == True]
         if not to_del.empty:
-            if st.button(f"{len(to_del)} Einträge löschen"):
+            if st.button(f"🗑️ {len(to_del)} Einträge löschen", type="primary"):
                 DatabaseRepository.delete_entries(to_del['id'].tolist())
                 st.rerun()
-                
-        # Exports
-        c_ex1, c_ex2 = st.columns(2)
-        c_ex1.download_button("Excel Export", Exporter.to_excel(df), "rohrbuch.xlsx")
-        if PDF_AVAILABLE:
-            c_ex2.download_button("PDF Export", Exporter.to_pdf(df), "rohrbuch.pdf")
+
+def render_handbook(calc, dn, pn):
+    """Statisches Tabellenbuch (V1)."""
+    row = calc.get_row(dn)
+    suffix = "_16" if pn == "PN 16" else "_10"
+    st.subheader(f"Tabellenbuch DN {dn}")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Außen-Ø", f"{row['D_Aussen']} mm")
+    c1.metric("Radius", f"{row['Radius_BA3']} mm")
+    c2.metric("Blattstärke", f"{row[f'Flansch_b{suffix}']} mm")
+    c2.metric("Lochkreis", f"{row[f'LK_k{suffix}']} mm")
+    c3.info(f"{row[f'Lochzahl{suffix}']}x {row[f'Schraube_M{suffix}']}")
 
 # -----------------------------------------------------------------------------
 # 5. MAIN
@@ -443,20 +544,17 @@ def main():
     df_pipe = get_pipe_data()
     calc = PipeCalculator(df_pipe)
 
-    # Sidebar
     with st.sidebar:
-        st.title("⚙️ Einstellungen")
-        sel_dn = st.selectbox("Nennweite", df_pipe['DN'], index=8)
-        sel_pn = st.radio("Druckstufe", ["PN 16", "PN 10"], horizontal=True)
+        st.title("⚙️ Setup")
+        dn = st.selectbox("Nennweite", df_pipe['DN'], index=8)
+        pn = st.radio("Druckstufe", ["PN 16", "PN 10"], horizontal=True)
 
-    # Tabs
-    t1, t2, t3, t4 = st.tabs(["🪚 Werkstatt", "📘 Daten", "📝 Rohrbuch", "🔄 Tools"])
+    t1, t2, t3, t4 = st.tabs(["🪚 Smarte Säge", "📐 Geometrie", "📝 Rohrbuch", "📘 Daten"])
     
-    with t1: render_tab_workshop(calc, df_pipe, sel_dn, sel_pn)
-    with t2: render_tab_handbook(calc, sel_dn, sel_pn)
-    with t3: render_tab_logbook(df_pipe)
-    with t4: 
-        st.info("Bogen & Stutzen Rechner hier einfügen...")
+    with t1: render_smart_saw(calc, df_pipe, dn, pn)
+    with t2: render_geometry_tools(calc, df_pipe)
+    with t3: render_logbook(df_pipe)
+    with t4: render_handbook(calc, dn, pn)
 
 if __name__ == "__main__":
     main()
