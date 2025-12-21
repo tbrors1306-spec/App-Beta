@@ -21,10 +21,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V7_3")
+logger = logging.getLogger("PipeCraft_Pro_V7_4")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 7.3",
+    page_title="Rohrbau Profi 7.4",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -82,7 +82,7 @@ def get_pipe_data() -> pd.DataFrame:
 DB_NAME = "rohrbau_profi.db"
 
 class DatabaseRepository:
-    """Verwaltet Datenbankoperationen (V7.3: STABLE Fixes)."""
+    """Verwaltet Datenbankoperationen (V7.4: Autocomplete)."""
     
     @staticmethod
     def init_db():
@@ -112,11 +112,9 @@ class DatabaseRepository:
                 try: c.execute("ALTER TABLE rohrbuch ADD COLUMN project_id INTEGER")
                 except: pass
             
-            # Ensure Project 1 exists
+            # Ensure Project 1
             c.execute("INSERT OR IGNORE INTO projects (id, name, created_at) VALUES (1, 'Standard Baustelle', ?)", 
                       (datetime.now().strftime("%d.%m.%Y"),))
-            
-            # Healing: Map orphans to Project 1
             c.execute("UPDATE rohrbuch SET project_id = 1 WHERE project_id IS NULL")
             conn.commit()
 
@@ -137,17 +135,15 @@ class DatabaseRepository:
 
     @staticmethod
     def add_entry(data: dict):
-        # FIX V7.3: Use consistent NAMED placeholders
         with sqlite3.connect(DB_NAME) as conn:
             c = conn.cursor()
-            # Ensure project_id is set
-            if 'project_id' not in data or data['project_id'] is None:
-                data['project_id'] = 1
-                
+            pid = data.get('project_id', 1)
+            if pid is None: pid = 1
+            
             c.execute('''INSERT INTO rohrbuch 
                          (iso, naht, datum, dimension, bauteil, laenge, charge, charge_apz, schweisser, project_id) 
                          VALUES (:iso, :naht, :datum, :dimension, :bauteil, :laenge, :charge, :charge_apz, :schweisser, :project_id)''', 
-                         data)
+                         dict(data, project_id=pid))
             conn.commit()
 
     @staticmethod
@@ -166,6 +162,30 @@ class DatabaseRepository:
             placeholders = ', '.join('?' for _ in ids)
             conn.cursor().execute(f"DELETE FROM rohrbuch WHERE id IN ({placeholders})", ids)
             conn.commit()
+
+    # --- NEU V7.4: AUTOCOMPLETE HELPER ---
+    @staticmethod
+    def get_known_values(column: str, project_id: int, limit: int = 50) -> List[str]:
+        """
+        Holt eindeutige, zuletzt verwendete Werte für ein Feld (z.B. Charge) in einem Projekt.
+        Sortiert nach ID (zuletzt eingegeben zuerst).
+        """
+        allowed = ['charge', 'charge_apz', 'schweisser', 'iso']
+        if column not in allowed: return []
+        
+        with sqlite3.connect(DB_NAME) as conn:
+            # Query: Distinct values, ordered by latest entry descending
+            # SQLite Hack für "Last Used": Wir gruppieren und nehmen MAX(id)
+            query = f'''
+                SELECT {column} 
+                FROM rohrbuch 
+                WHERE project_id = ? AND {column} IS NOT NULL AND {column} != ''
+                GROUP BY {column}
+                ORDER BY MAX(id) DESC
+                LIMIT ?
+            '''
+            rows = conn.cursor().execute(query, (project_id, limit)).fetchall()
+            return [r[0] for r in rows]
 
 # -----------------------------------------------------------------------------
 # 3. HELPER & LOGIK
@@ -406,19 +426,16 @@ def render_sidebar_projects():
     st.sidebar.title("🏗️ Projekt")
     projects = DatabaseRepository.get_projects() 
     
-    # 1. State Handling: Ensure active_project_id exists
     if 'active_project_id' not in st.session_state:
         if projects:
             st.session_state.active_project_id = projects[0][0]
             st.session_state.active_project_name = projects[0][1]
     
-    # 2. Re-Validate State: Check if stored ID still exists in DB (deleted?)
     current_ids = [p[0] for p in projects]
     if st.session_state.active_project_id not in current_ids and projects:
         st.session_state.active_project_id = projects[0][0]
         st.session_state.active_project_name = projects[0][1]
 
-    # 3. Find Index for Selectbox
     project_names = [p[1] for p in projects]
     current_idx = 0
     for i, p in enumerate(projects):
@@ -429,7 +446,6 @@ def render_sidebar_projects():
     selected_name = st.sidebar.selectbox("Aktive Baustelle:", project_names, index=current_idx)
     new_id = [p[0] for p in projects if p[1] == selected_name][0]
     
-    # 4. Logic: Switch Project
     if new_id != st.session_state.active_project_id:
         st.session_state.active_project_id = new_id
         st.session_state.active_project_name = selected_name
@@ -648,7 +664,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
             except ValueError as e: st.error(str(e))
 
 def render_logbook(df_pipe: pd.DataFrame):
-    st.subheader("📝 Digitales Rohrbuch (V7.3)")
+    st.subheader("📝 Digitales Rohrbuch (V7.4)")
     
     proj_name = st.session_state.get('active_project_name', 'Unbekannt')
     active_pid = st.session_state.get('active_project_id', 1)
@@ -661,19 +677,64 @@ def render_logbook(df_pipe: pd.DataFrame):
     with st.expander("Eintrag hinzufügen", expanded=True):
         with st.form("lb_new"):
             c1, c2, c3 = st.columns(3)
-            iso = c1.text_input("ISO / Bez.", value=def_iso)
+            # ISO: Auch hier Autocomplete anbieten
+            iso_known = DatabaseRepository.get_known_values('iso', active_pid)
+            if iso_known:
+                iso_sel = c1.selectbox("ISO / Bez.", ["✨ Neu / Manuell"] + iso_known)
+                if iso_sel == "✨ Neu / Manuell":
+                    iso = c1.text_input("ISO manuell", value=def_iso, label_visibility="collapsed")
+                else:
+                    iso = iso_sel
+            else:
+                iso = c1.text_input("ISO / Bez.", value=def_iso)
+
             naht = c2.text_input("Naht")
             dat = c3.date_input("Datum")
+            
             c4, c5, c6 = st.columns(3)
             def_idx = 0 
             if def_iso: def_idx = 5 
             bt = c4.selectbox("Bauteil", ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Stutzen", "Passstück"], index=def_idx)
             dn = c5.selectbox("Dimension", df_pipe['DN'], index=8)
             laenge_in = c6.number_input("Länge (mm)", value=float(def_len if def_len > 0 else 0.0)) 
-            ch = st.text_input("Charge")
+            
+            # NEU V7.4: Intelligente Inputs
+            # 1. Charge
+            ch_known = DatabaseRepository.get_known_values('charge', active_pid)
+            if ch_known:
+                ch_sel = st.selectbox("Charge (Auswahl)", ["✨ Neu / Manuell"] + ch_known)
+                if ch_sel == "✨ Neu / Manuell":
+                    ch = st.text_input("Charge (Eingabe)", label_visibility="collapsed")
+                else:
+                    ch = ch_sel
+            else:
+                ch = st.text_input("Charge")
+
             c7, c8 = st.columns(2)
-            apz = c7.text_input("APZ / Zeugnis")
-            sch = c8.text_input("Schweißer")
+            
+            # 2. APZ
+            apz_known = DatabaseRepository.get_known_values('charge_apz', active_pid)
+            with c7:
+                if apz_known:
+                    apz_sel = st.selectbox("APZ (Auswahl)", ["✨ Neu / Manuell"] + apz_known)
+                    if apz_sel == "✨ Neu / Manuell":
+                        apz = st.text_input("APZ (Eingabe)", label_visibility="collapsed")
+                    else:
+                        apz = apz_sel
+                else:
+                    apz = st.text_input("APZ / Zeugnis")
+
+            # 3. Schweißer
+            sch_known = DatabaseRepository.get_known_values('schweisser', active_pid)
+            with c8:
+                if sch_known:
+                    sch_sel = st.selectbox("Schweißer (Auswahl)", ["✨ Neu / Manuell"] + sch_known)
+                    if sch_sel == "✨ Neu / Manuell":
+                        sch = st.text_input("Schweißer (Eingabe)", label_visibility="collapsed")
+                    else:
+                        sch = sch_sel
+                else:
+                    sch = st.text_input("Schweißer")
             
             if st.form_submit_button("Speichern 💾", type="primary"):
                 DatabaseRepository.add_entry({
@@ -704,7 +765,7 @@ def render_logbook(df_pipe: pd.DataFrame):
                 DatabaseRepository.delete_entries(to_del['id'].tolist())
                 st.rerun()
     else:
-        st.info(f"Keine Einträge für Projekt '{proj_name}' gefunden.")
+        st.info(f"Keine Einträge für Projekt '{proj_name}' gefunden. Beginne mit der ersten Naht oder importiere aus der Säge.")
 
 def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
     row = calc.get_row(dn)
@@ -726,9 +787,9 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
         with c_in2:
             w_data = HandbookCalculator.calculate_weight(od, wt_input, len_input * 1000)
             mc1, mc2, mc3 = st.columns(3)
-            mc1.metric("Leergewicht", f"{w_data['total_steel']:.1f} kg", f"{w_data['kg_per_m_steel']:.1f} kg/m")
-            mc2.metric("Gefüllt", f"{w_data['total_filled']:.1f} kg", "Hydrotest")
-            mc3.metric("Volumen", f"{w_data['volume_l']:.0f} L")
+            mc1.metric("Leergewicht (Stahl)", f"{w_data['total_steel']:.1f} kg", f"{w_data['kg_per_m_steel']:.1f} kg/m")
+            mc2.metric("Gewicht Gefüllt", f"{w_data['total_filled']:.1f} kg", "für Hydrotest")
+            mc3.metric("Füllvolumen", f"{w_data['volume_l']:.0f} Liter", "Wasserbedarf")
 
     c_geo1, c_geo2 = st.columns(2)
     with c_geo1:
