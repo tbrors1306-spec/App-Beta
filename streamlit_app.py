@@ -1,7 +1,7 @@
 """
-PipeCraft V46.0 (Clean Code Master Edition)
--------------------------------------------
-Eine professionelle Softwarelösung für den industriellen Rohrleitungsbau.
+PipeCraft V46.1 (Clean Code Master Edition - Hotfix)
+----------------------------------------------------
+Fix: Missing 'datetime' import added.
 
 FOKUS:
 1. Technische Berechnungen (Sägelisten, Bogenabwicklung, Stutzen).
@@ -30,6 +30,8 @@ import logging
 from dataclasses import dataclass
 from io import BytesIO
 from typing import List, Optional, Tuple, Dict, Any
+# WICHTIG: Dieser Import hat gefehlt
+from datetime import datetime
 
 # Logging konfigurieren für Debugging-Zwecke
 logging.basicConfig(
@@ -48,7 +50,7 @@ except ImportError:
 
 # Streamlit Seiten-Konfiguration (Muss der erste Streamlit-Befehl sein)
 st.set_page_config(
-    page_title="PipeCraft V46.0",
+    page_title="PipeCraft V46.1",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -434,7 +436,7 @@ standard_radius_global = float(row_data_global['Radius_BA3'])
 suffix = "_16" if selected_pn == "PN 16" else "_10"
 
 # --- HAUPTBEREICH ---
-st.title("PipeCraft V46.0")
+st.title("PipeCraft V46.1")
 st.caption(f"🔧 Aktive Konfiguration: DN {selected_dn_global} | {selected_pn} | Standard-Radius: {standard_radius_global} mm")
 
 # Tabs definieren
