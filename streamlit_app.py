@@ -4,6 +4,7 @@ import math
 import sqlite3
 import logging
 import re
+import time
 from dataclasses import dataclass, field, asdict
 from io import BytesIO
 from typing import List, Tuple, Optional, Dict
@@ -24,10 +25,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V10_0")
+logger = logging.getLogger("PipeCraft_Pro_V10_1")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 10.0",
+    page_title="Rohrbau Profi 10.1",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -102,7 +103,7 @@ class DatabaseRepository:
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         name TEXT NOT NULL UNIQUE,
                         created_at TEXT,
-                        archived INTEGER DEFAULT 0)''') # V10: Archived flag
+                        archived INTEGER DEFAULT 0)''') 
             
             c.execute("PRAGMA table_info(rohrbuch)")
             cols = [info[1] for info in c.fetchall()]
@@ -127,7 +128,6 @@ class DatabaseRepository:
     @staticmethod
     def get_projects() -> List[tuple]:
         with sqlite3.connect(DB_NAME) as conn:
-            # Return ID, Name, Archived status
             return conn.cursor().execute("SELECT id, name, archived FROM projects ORDER BY id ASC").fetchall()
 
     @staticmethod
@@ -479,26 +479,21 @@ class Exporter:
         pdf.ln(5)
         
         # Group by APZ
-        # Clean up APZ column
         df_log['charge_apz'] = df_log['charge_apz'].fillna('OHNE NACHWEIS').replace('', 'OHNE NACHWEIS')
         groups = df_log.groupby('charge_apz')
         
         pdf.set_font("Arial", size=10)
         
         for apz, group in groups:
-            # Header per APZ
             pdf.set_fill_color(230, 230, 230)
             pdf.set_font("Arial", 'B', 10)
             pdf.cell(0, 8, f"Charge / APZ: {apz}", 1, 1, 'L', fill=True)
             
-            # Items
             pdf.set_font("Arial", size=9)
-            # Aggregate group items for cleaner list: "3x Bogen DN100" instead of 3 lines
             agg = group.groupby(['dimension', 'bauteil']).size().reset_index(name='count')
             
             for _, row in agg.iterrows():
                 txt = f"   {row['count']}x {row['bauteil']} {row['dimension']}"
-                # Get example ISOs
                 isos = group[(group['dimension']==row['dimension']) & (group['bauteil']==row['bauteil'])]['iso'].unique()
                 iso_txt = ", ".join(isos[:3])
                 if len(isos) > 3: iso_txt += "..."
@@ -579,15 +574,18 @@ def render_sidebar_projects():
             st.session_state.active_project_id = projects[0][0]
             st.session_state.active_project_name = projects[0][1]
             st.session_state.project_archived = projects[0][2]
-    
-    # Sync Session state with current selection logic
-    current_ids = [p[0] for p in projects]
-    if st.session_state.active_project_id not in current_ids and projects:
-        st.session_state.active_project_id = projects[0][0]
-        st.session_state.active_project_name = projects[0][1]
-        st.session_state.project_archived = projects[0][2]
+        else:
+            st.session_state.active_project_id = None
+            st.session_state.active_project_name = "Kein Projekt"
+            st.session_state.project_archived = 0
 
-    # Selectbox logic
+    if 'project_archived' not in st.session_state:
+        st.session_state.project_archived = 0 
+
+    current_proj_data = next((p for p in projects if p[0] == st.session_state.active_project_id), None)
+    if current_proj_data:
+        st.session_state.project_archived = current_proj_data[2]
+    
     project_names = []
     for p in projects:
         prefix = "🔒 " if p[2] == 1 else ""
@@ -601,7 +599,6 @@ def render_sidebar_projects():
             
     selected_display = st.sidebar.selectbox("Aktive Baustelle:", project_names, index=current_idx)
     
-    # Find ID based on selection
     sel_index = project_names.index(selected_display)
     new_id = projects[sel_index][0]
     new_name = projects[sel_index][1]
@@ -615,7 +612,6 @@ def render_sidebar_projects():
         st.session_state.fitting_list = []
         st.rerun()
 
-    # Show Archive Status
     if st.session_state.project_archived == 1:
         st.sidebar.warning("🔒 Projekt ist archiviert (Read-Only)")
 
@@ -949,61 +945,70 @@ def render_logbook(df_pipe: pd.DataFrame):
     # READ ONLY CHECK
     if not is_archived:
         with st.expander("Eintrag hinzufügen", expanded=True):
-            with st.form("lb_new"):
-                c1, c2, c3 = st.columns(3)
-                iso_known = DatabaseRepository.get_known_values('iso', active_pid)
-                if iso_known:
-                    iso_sel = c1.selectbox("ISO / Bez.", ["✨ Neu / Manuell"] + iso_known)
-                    if iso_sel == "✨ Neu / Manuell":
-                        iso = c1.text_input("ISO manuell", value=def_iso, label_visibility="collapsed")
-                    else:
-                        iso = iso_sel
+            # V10.1: Kein st.form mehr für interaktive Inputs!
+            c1, c2, c3 = st.columns(3)
+            iso_known = DatabaseRepository.get_known_values('iso', active_pid)
+            
+            # ISO SELECT
+            iso_val = ""
+            if iso_known:
+                iso_sel = c1.selectbox("ISO / Bez.", ["✨ Neu / Manuell"] + iso_known)
+                if iso_sel == "✨ Neu / Manuell":
+                    iso_val = c1.text_input("ISO manuell", value=def_iso)
                 else:
-                    iso = c1.text_input("ISO / Bez.", value=def_iso)
+                    iso_val = iso_sel
+            else:
+                iso_val = c1.text_input("ISO / Bez.", value=def_iso)
 
-                naht = c2.text_input("Naht")
-                dat = c3.date_input("Datum")
-                
-                c4, c5, c6 = st.columns(3)
-                def_idx = 0 
-                if def_iso: def_idx = 5 
-                bt = c4.selectbox("Bauteil", ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Stutzen", "Passstück", "Nippel", "Muffe"], index=def_idx)
-                dn = c5.selectbox("Dimension", df_pipe['DN'], index=8)
-                laenge_in = c6.number_input("Länge (mm)", value=float(def_len if def_len > 0 else 0.0)) 
-                
-                c7, c8 = st.columns(2)
-                apz_known = DatabaseRepository.get_known_values('charge_apz', active_pid)
-                with c7:
-                    if apz_known:
-                        apz_sel = st.selectbox("APZ (Auswahl)", ["✨ Neu / Manuell"] + apz_known)
-                        if apz_sel == "✨ Neu / Manuell":
-                            apz = st.text_input("APZ (Eingabe)", label_visibility="collapsed")
-                        else:
-                            apz = apz_sel
+            naht_val = c2.text_input("Naht")
+            dat_val = c3.date_input("Datum")
+            
+            c4, c5, c6 = st.columns(3)
+            def_idx = 0 
+            if def_iso: def_idx = 5 
+            bt_val = c4.selectbox("Bauteil", ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Stutzen", "Passstück", "Nippel", "Muffe"], index=def_idx)
+            dn_val = c5.selectbox("Dimension", df_pipe['DN'], index=8)
+            len_val = c6.number_input("Länge (mm)", value=float(def_len if def_len > 0 else 0.0)) 
+            
+            c7, c8 = st.columns(2)
+            
+            # APZ SELECT
+            apz_val = ""
+            apz_known = DatabaseRepository.get_known_values('charge_apz', active_pid)
+            with c7:
+                if apz_known:
+                    apz_sel = st.selectbox("APZ (Auswahl)", ["✨ Neu / Manuell"] + apz_known)
+                    if apz_sel == "✨ Neu / Manuell":
+                        apz_val = st.text_input("APZ (Eingabe)")
                     else:
-                        apz = st.text_input("APZ / Zeugnis")
+                        apz_val = apz_sel
+                else:
+                    apz_val = st.text_input("APZ / Zeugnis")
 
-                sch_known = DatabaseRepository.get_known_values('schweisser', active_pid)
-                with c8:
-                    if sch_known:
-                        sch_sel = st.selectbox("Schweißer (Auswahl)", ["✨ Neu / Manuell"] + sch_known)
-                        if sch_sel == "✨ Neu / Manuell":
-                            sch = st.text_input("Schweißer (Eingabe)", label_visibility="collapsed")
-                        else:
-                            sch = sch_sel
+            # SCHWEISSER SELECT
+            sch_val = ""
+            sch_known = DatabaseRepository.get_known_values('schweisser', active_pid)
+            with c8:
+                if sch_known:
+                    sch_sel = st.selectbox("Schweißer (Auswahl)", ["✨ Neu / Manuell"] + sch_known)
+                    if sch_sel == "✨ Neu / Manuell":
+                        sch_val = st.text_input("Schweißer (Eingabe)")
                     else:
-                        sch = st.text_input("Schweißer")
-                
-                if st.form_submit_button("Speichern 💾", type="primary"):
-                    DatabaseRepository.add_entry({
-                        "iso": iso, "naht": naht, "datum": dat.strftime("%d.%m.%Y"),
-                        "dimension": f"DN {dn}", "bauteil": bt, "laenge": laenge_in,
-                        "charge": "", "charge_apz": apz, "schweisser": sch,
-                        "project_id": active_pid
-                    })
-                    if 'logbook_defaults' in st.session_state: del st.session_state['logbook_defaults']
-                    st.success("Gespeichert")
-                    st.rerun()
+                        sch_val = sch_sel
+                else:
+                    sch_val = st.text_input("Schweißer")
+            
+            # Speichern Button (Außerhalb Form)
+            if st.button("Speichern 💾", type="primary"):
+                DatabaseRepository.add_entry({
+                    "iso": iso_val, "naht": naht_val, "datum": dat_val.strftime("%d.%m.%Y"),
+                    "dimension": f"DN {dn_val}", "bauteil": bt_val, "laenge": len_val,
+                    "charge": "", "charge_apz": apz_val, "schweisser": sch_val,
+                    "project_id": active_pid
+                })
+                if 'logbook_defaults' in st.session_state: del st.session_state['logbook_defaults']
+                st.success("Gespeichert")
+                st.rerun()
 
     st.divider()
     
@@ -1017,12 +1022,8 @@ def render_logbook(df_pipe: pd.DataFrame):
             ce2.download_button("📄 PDF", Exporter.to_pdf_logbook(df, project_name=proj_name), f"{fname_base}.pdf")
             
         df_display = df.drop(columns=['charge'], errors='ignore')
-        
-        # Read-Only logic for editor
         disable_cols = ["dimension", "bauteil", "laenge", "iso"]
-        if is_archived:
-            # Disable EVERYTHING if archived
-            disable_cols = df_display.columns.tolist() 
+        if is_archived: disable_cols = df_display.columns.tolist() 
         
         edited_df = st.data_editor(
             df_display, 
@@ -1030,14 +1031,12 @@ def render_logbook(df_pipe: pd.DataFrame):
             use_container_width=True, 
             column_config={
                 "Löschen": st.column_config.CheckboxColumn(default=False, disabled=bool(is_archived)),
-                "id": None, 
-                "project_id": None
+                "id": None, "project_id": None
             },
             disabled=disable_cols,
             key="logbook_editor"
         )
         
-        # Update Logic (Only if not archived)
         if not is_archived and "logbook_editor" in st.session_state:
             changes = st.session_state["logbook_editor"].get("edited_rows", {})
             if changes:
@@ -1047,8 +1046,9 @@ def render_logbook(df_pipe: pd.DataFrame):
                         if col == "Löschen": continue
                         DatabaseRepository.update_cell(real_id, col, val)
                 st.toast("Änderungen gespeichert!", icon="💾")
+                time.sleep(0.5) # Kurze Pause für UX
+                st.rerun() # Refresh erzwingen für Health-Check Sync
                 
-        # Delete Logic (Only if not archived)
         if not is_archived:
             to_del = edited_df[edited_df['Löschen'] == True]
             if not to_del.empty:
@@ -1140,7 +1140,6 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
             st.session_state.project_archived = 0
             st.rerun()
             
-        # Export auch im Archiv möglich
         df_log = DatabaseRepository.get_logbook_by_project(active_pid)
         if not df_log.empty and PDF_AVAILABLE:
             st.divider()
@@ -1151,11 +1150,20 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
 
     st.info("Hier wird das Projekt finalisiert und der Endbericht erstellt.")
     
-    # 1. Health Check
     df_log = DatabaseRepository.get_logbook_by_project(active_pid)
     
-    missing_apz = len(df_log[df_log['charge_apz'].isna() | (df_log['charge_apz'] == '')])
-    missing_weld = len(df_log[df_log['schweisser'].isna() | (df_log['schweisser'] == '')])
+    # V10.1 IMPROVED CHECK: Strip whitespace, handle empty strings correctly
+    # Check APZ: Must be string, stripped not empty, and not None
+    missing_apz = len(df_log[
+        df_log['charge_apz'].isna() | 
+        (df_log['charge_apz'].astype(str).str.strip() == '')
+    ])
+    
+    missing_weld = len(df_log[
+        df_log['schweisser'].isna() | 
+        (df_log['schweisser'].astype(str).str.strip() == '')
+    ])
+    
     open_cuts = len(st.session_state.saved_cuts)
     
     health_score = 100
@@ -1168,7 +1176,6 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
     c2.metric("Fehlende Schweißer", missing_weld, "Einträge")
     c3.metric("Offene Säge-Liste", open_cuts, "Nicht übertragen")
     
-    # 2. Traffic Light
     if health_score == 100:
         st.success("✅ Alle Daten vollständig. Bereit für Abschluss.")
         ready = True
@@ -1178,7 +1185,6 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
         
     st.divider()
     
-    # 3. Actions
     col_act, col_pdf = st.columns(2)
     
     with col_act:
@@ -1205,10 +1211,10 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
 # -----------------------------------------------------------------------------
 
 def main():
-    if 'v10_0_migration_done' not in st.session_state:
+    if 'v10_1_migration_done' not in st.session_state:
         st.session_state.saved_cuts = []
         st.session_state.fitting_list = []
-        st.session_state.v10_0_migration_done = True
+        st.session_state.v10_1_migration_done = True
         st.rerun()
 
     DatabaseRepository.init_db()
