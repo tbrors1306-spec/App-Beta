@@ -5,7 +5,7 @@ import sqlite3
 import logging
 from dataclasses import dataclass, asdict
 from io import BytesIO
-from typing import List, Tuple, Optional, Dict
+from typing import List, Dict
 from datetime import datetime
 import matplotlib.pyplot as plt
 
@@ -21,56 +21,28 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V5_3")
+logger = logging.getLogger("PipeCraft_Pro_V5_4")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 5.3",
+    page_title="Rohrbau Profi 5.4",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
+# Minimalistisches CSS (Nur noch für Abstände, keine bunten Boxen mehr)
 st.markdown("""
 <style>
     .main { background-color: #f8f9fa; }
     h1, h2, h3 { color: #1e293b; font-family: 'Segoe UI', sans-serif; }
     
-    /* Boxen Styles */
-    .success-box {
-        padding: 20px;
-        background-color: #dcfce7;
-        color: #166534;
-        border-radius: 8px;
-        border-left: 5px solid #22c55e;
-        margin: 10px 0;
-        text-align: center;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    }
-    .error-box {
-        padding: 20px;
-        background-color: #fee2e2;
-        color: #991b1b;
-        border-radius: 8px;
-        border-left: 5px solid #ef4444;
-        margin: 10px 0;
-        text-align: center;
-    }
-    .info-box {
-        padding: 15px;
-        background-color: #eff6ff;
-        color: #1e40af;
-        border-radius: 6px;
-        border-left: 4px solid #3b82f6;
-        margin-bottom: 10px;
-    }
-    
-    /* Metriken hervorheben */
+    /* Metriken Styling vereinheitlichen */
     div[data-testid="stMetric"] {
         background-color: #ffffff;
         border: 1px solid #e2e8f0;
         border-radius: 8px;
-        padding: 10px;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        padding: 15px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -118,6 +90,7 @@ class DatabaseRepository:
                         dimension TEXT, bauteil TEXT, laenge REAL, 
                         charge TEXT, charge_apz TEXT, schweisser TEXT)''')
             
+            # Migration APZ
             c.execute("PRAGMA table_info(rohrbuch)")
             cols = [info[1] for info in c.fetchall()]
             if 'charge_apz' not in cols:
@@ -177,8 +150,6 @@ class SavedCut:
     timestamp: str
 
 class PipeCalculator:
-    """Zentrale Logik."""
-    
     def __init__(self, df: pd.DataFrame):
         self.df = df
 
@@ -321,7 +292,8 @@ class Exporter:
 # -----------------------------------------------------------------------------
 
 def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn: str):
-    st.subheader("🪚 Smarte Säge 5.2")
+    """Smarte Säge V5.4"""
+    st.subheader("🪚 Smarte Säge 5.4")
     
     if 'fitting_list' in st.session_state and st.session_state.fitting_list:
         try: _ = st.session_state.fitting_list[0].id
@@ -381,9 +353,10 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
 
             st.divider()
             if final < 0:
-                st.markdown(f"<div class='error-box'>Negativmaß!<br>{final:.1f} mm</div>", unsafe_allow_html=True)
+                # DESIGN FIX: Native Error Box statt Custom HTML
+                st.error(f"ACHTUNG: Negativmaß! Abzüge ({total:.1f}) > Rohr ({raw_len:.1f})")
             else:
-                st.markdown(f"<div class='success-box'>Sägelänge<br><b>{final:.1f} mm</b></div>", unsafe_allow_html=True)
+                st.success(f"Sägelänge: {final:.1f} mm")
                 st.caption(f"Details: Teile -{sum_fit:.1f} | Spalte -{sum_gap:.1f} | Dicht. -{sum_gskt:.1f}")
                 
                 if st.button("💾 Speichern", type="primary", use_container_width=True):
@@ -405,7 +378,6 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
 
 def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
     st.subheader("📐 Geometrie & Schablonen")
-    
     t_stutz, t_bogen = st.tabs(["🔥 Stutzen-Schablone", "🔄 Bogen-Rechner"])
     
     with t_stutz:
@@ -424,7 +396,6 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 st.error(str(e))
 
     with t_bogen:
-        st.markdown("#### Bogen Zuschnitt")
         cb1, cb2 = st.columns(2)
         angle = cb1.slider("Winkel (°)", 0, 90, 45, key="gb_ang")
         dn_b = cb2.selectbox("DN Bogen", df['DN'], index=6, key="gb_dn")
@@ -436,7 +407,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
         
         with c_vorbau:
             st.markdown("**Einbaumaß**")
-            st.markdown(f"<div class='info-box'>Vorbau (Z-Maß)<br><b>{details['vorbau']:.1f} mm</b></div>", unsafe_allow_html=True)
+            st.metric("Vorbau (Z-Maß)", f"{details['vorbau']:.1f} mm")
             
         with c_laengen:
             st.markdown("**Bogenlängen (Material)**")
@@ -488,6 +459,9 @@ def render_logbook(df_pipe: pd.DataFrame):
                 st.rerun()
 
 def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
+    """
+    DESIGN FIX V5.4: Konsequente Nutzung von st.metric statt HTML Boxen.
+    """
     row = calc.get_row(dn)
     suffix = "_16" if pn == "PN 16" else "_10"
     st.subheader(f"📚 Smart Data: DN {dn} / {pn}")
@@ -498,7 +472,8 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
     bolt = row[f'Schraube_M{suffix}']
     n_holes = int(row[f'Lochzahl{suffix}'])
     
-    with st.expander("🏗️ Rohrgewichte & Hydrotest (Kran/Gerüst)", expanded=True):
+    with st.container(border=True):
+        st.markdown("##### 🏗️ Gewichte & Hydrotest")
         c_in1, c_in2 = st.columns([1, 2])
         with c_in1:
             wt_input = st.number_input("Wandstärke (mm)", value=6.3, min_value=1.0, step=0.1)
@@ -512,31 +487,34 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
 
     c_geo1, c_geo2 = st.columns(2)
     with c_geo1:
-        st.markdown("#### 📐 Flansch Geometrie")
-        st.write(f"**Blattstärke:** {flange_b} mm")
-        st.write(f"**Lochkreis:** {lk} mm")
-        st.write(f"**Lochzahl:** {n_holes} x {bolt}")
-        # BUGFIX V5.3: Progress Bar Crash Fix für große Dimensionen (DN 400+)
-        # Alter Code: st.progress(lk / (od + 100)) -> Crash bei > 1.0
-        # Neuer Code: Wir limitieren den Wert auf 1.0
-        progress_val = min(lk / (od + 100), 1.0)
-        st.progress(progress_val, text=f"Lochkreis Verhältnis")
+        with st.container(border=True):
+            st.markdown("##### 📐 Flansch")
+            st.write(f"**Blatt:** {flange_b} mm | **Lochkreis:** {lk} mm")
+            st.write(f"**Bohrung:** {n_holes} x {bolt}")
+            # BUGFIX V5.3 (bewahrt): Progress Bar Limit
+            progress_val = min(lk / (od + 100), 1.0)
+            st.progress(progress_val, text="Lochkreis Verhältnis")
 
     with c_geo2:
-        st.markdown("#### 🔘 Dichtung (Check)")
-        d_innen = od - (2*wt_input) 
-        d_aussen = lk - (int(bolt.replace("M","")) * 1.5)
-        st.info(f"* Innen-Ø: ~{d_innen:.0f} mm\n* Außen-Ø: ~{d_aussen:.0f} mm\n* Dicke: 2.0 mm (Std)")
+        with st.container(border=True):
+            st.markdown("##### 🔘 Dichtung (Check)")
+            d_innen = od - (2*wt_input) 
+            d_aussen = lk - (int(bolt.replace("M","")) * 1.5)
+            st.info(f"ID: ~{d_innen:.0f} mm | AD: ~{d_aussen:.0f} mm | 2.0mm")
 
     st.divider()
+    
+    # DESIGN FIX: Native Metriken für Montage
     st.markdown("#### 🔧 Montage & Drehmomente (8.8)")
-    cb_col1, cb_col2 = st.columns([1, 2])
+    
+    cb_col1, cb_col2 = st.columns([1, 2.5])
     
     with cb_col1:
         st.caption("Konfiguration")
-        conn_type = st.radio("Typ", ["Fest-Fest (V-V)", "Fest-Los (V-L)", "Fest-Blind (V-B)"], index=0)
-        use_washers = st.checkbox("Unterlegscheiben (2x)", value=True)
-        gasket_thk = st.number_input("Dichtung (mm)", value=2.0, step=0.5)
+        conn_type = st.radio("Typ", ["Fest-Fest", "Fest-Los", "Fest-Blind"], index=0, label_visibility="collapsed")
+        use_washers = st.checkbox("2x U-Scheibe", value=True)
+        is_lubed = st.toggle("Geschmiert (MoS2)", value=True)
+        gasket_thk = st.number_input("Dichtung", value=2.0, step=0.5)
         
     with cb_col2:
         bolt_info = HandbookCalculator.BOLT_DATA.get(bolt, [0, 0, 0])
@@ -549,15 +527,13 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
             
         n_washers = 2 if use_washers else 0
         calc_len = HandbookCalculator.get_bolt_length(t1, t2, bolt, n_washers, gasket_thk)
-        
-        res_c1, res_c2, res_c3 = st.columns(3)
-        res_c1.markdown(f"<div class='success-box' style='padding:10px'>🔩 Bolzen<br><b>{bolt} x {calc_len}</b><br><span style='font-size:0.8em'>{n_holes} Stk.</span></div>", unsafe_allow_html=True)
-        res_c2.markdown(f"<div class='info-box' style='text-align:center'>🔧 Schlüssel<br><b>SW {sw} mm</b><br><span style='font-size:0.8em'>Nuss/Ring</span></div>", unsafe_allow_html=True)
-        
-        is_lubed = st.toggle("Geschmiert (MoS2)?", value=True)
         torque = nm_lube if is_lubed else nm_dry
-        style_col = "#dcfce7" if is_lubed else "#fee2e2"
-        res_c3.markdown(f"<div style='background-color:{style_col}; padding:10px; border-radius:8px; text-align:center; border:1px solid #ccc'>💪 Moment<br><b>{torque} Nm</b><br><span style='font-size:0.8em'>{'Geschmiert' if is_lubed else 'Trocken'}</span></div>", unsafe_allow_html=True)
+        
+        # Sauberer, nativer Look
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Bolzen", f"{bolt} x {calc_len}", f"{n_holes} Stk.")
+        m2.metric("Schlüsselweite", f"SW {sw} mm", "Nuss/Ring")
+        m3.metric("Drehmoment", f"{torque} Nm", "Geschmiert" if is_lubed else "Trocken")
 
 # -----------------------------------------------------------------------------
 # 5. MAIN
