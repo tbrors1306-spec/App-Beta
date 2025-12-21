@@ -21,10 +21,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_Pro_V5_1")
+logger = logging.getLogger("PipeCraft_Pro_V5_2")
 
 st.set_page_config(
-    page_title="Rohrbau Profi 5.1",
+    page_title="Rohrbau Profi 5.2",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -102,13 +102,6 @@ def get_pipe_data() -> pd.DataFrame:
         'Lochzahl_10':   [4, 4, 4, 4, 4, 8, 8, 8, 8, 8, 12, 12, 16, 16, 20, 20, 20, 20, 24, 28, 28, 32, 36, 40]
     }
     return pd.DataFrame(raw_data)
-
-SCHRAUBEN_DB = { 
-    "M12": {"sw": 18, "nm": 60}, "M16": {"sw": 24, "nm": 130}, "M20": {"sw": 30, "nm": 250},
-    "M24": {"sw": 36, "nm": 420}, "M27": {"sw": 41, "nm": 600}, "M30": {"sw": 46, "nm": 830},
-    "M33": {"sw": 50, "nm": 1100}, "M36": {"sw": 55, "nm": 1400}, "M39": {"sw": 60, "nm": 1800},
-    "M45": {"sw": 70, "nm": 2700}, "M52": {"sw": 80, "nm": 4200} 
-}
 
 DB_NAME = "rohrbau_profi.db"
 
@@ -206,7 +199,7 @@ class PipeCalculator:
         if "Reduzierung" in f_type: return float(row['Red_Laenge_L'])
         return 0.0
 
-    # --- BOGEN-RECHNER (NEU: inkl. Mitte) ---
+    # --- BOGEN-RECHNER ---
     def calculate_bend_details(self, dn: int, angle: float) -> Dict[str, float]:
         """Berechnet alle relevanten Bogenmaße für die Geometrie-Ansicht."""
         row = self.get_row(dn)
@@ -217,7 +210,7 @@ class PipeCalculator:
         return {
             "vorbau": r * math.tan(rad / 2),
             "bogen_aussen": (r + da/2) * rad,
-            "bogen_mitte": r * rad,           # Das fehlende Feature
+            "bogen_mitte": r * rad,
             "bogen_innen": (r - da/2) * rad
         }
 
@@ -237,6 +230,68 @@ class PipeCalculator:
             u_val = (r_stub * 2 * math.pi) * (angle / 360)
             table_data.append({"Winkel": f"{angle}°", "Tiefe (mm)": round(t_val, 1), "Umfang (mm)": round(u_val, 1)})
         return pd.DataFrame(table_data)
+
+class HandbookCalculator:
+    """
+    NEU: Spezialisierte Logik für das technische Tabellenbuch (Smart Data).
+    """
+    
+    # M-Gewinde: [SW, Nm_Trocken, Nm_Geschmiert(Molykote)]
+    BOLT_DATA = {
+        "M12": [19, 85, 55],    
+        "M16": [24, 210, 135],
+        "M20": [30, 410, 265],
+        "M24": [36, 710, 460],
+        "M27": [41, 1050, 680],
+        "M30": [46, 1420, 920],
+        "M33": [50, 1930, 1250],
+        "M36": [55, 2480, 1600],
+        "M39": [60, 3200, 2080],
+        "M45": [70, 5000, 3250],
+        "M52": [80, 7700, 5000]
+    }
+
+    @staticmethod
+    def calculate_weight(od: float, wall: float, length: float) -> dict:
+        """Berechnet Stahlgewicht und Wasserfüllung (Hydrotest)."""
+        if wall <= 0: return {"steel": 0, "water": 0, "total": 0}
+        
+        # Stahl-Dichte ca. 7.85 kg/dm³
+        id_mm = od - (2 * wall)
+        vol_steel_m = (math.pi * (od**2 - id_mm**2) / 4) / 1_000_000 # m² Querschnitt
+        weight_steel_kgm = vol_steel_m * 7850 # kg/m
+        
+        # Wasser
+        vol_water_m = (math.pi * (id_mm**2) / 4) / 1_000_000 # m²
+        weight_water_kgm = vol_water_m * 1000 # kg/m (Dichte 1.0)
+        
+        return {
+            "kg_per_m_steel": weight_steel_kgm,
+            "kg_per_m_water": weight_water_kgm,
+            "total_steel": weight_steel_kgm * (length / 1000),
+            "total_filled": (weight_steel_kgm + weight_water_kgm) * (length / 1000),
+            "volume_l": vol_water_m * (length / 1000) * 1000 # in Liter
+        }
+
+    @staticmethod
+    def get_bolt_length(flange_thk_1: float, flange_thk_2: float, bolt_dim: str, washers: int = 2, gasket: float = 2.0) -> int:
+        """Berechnet die Schraubenlänge dynamisch."""
+        try:
+            d = int(bolt_dim.replace("M", ""))
+            h_nut = d * 0.8
+            h_washer = 4.0
+            overhang = max(6.0, d * 0.4) 
+            
+            calc_len = flange_thk_1 + flange_thk_2 + gasket + (washers * h_washer) + h_nut + overhang
+            
+            # Aufrunden auf nächste 5mm
+            remainder = calc_len % 5
+            if remainder != 0:
+                calc_len += (5 - remainder)
+            
+            return int(calc_len)
+        except:
+            return 0
 
 class Visualizer:
     @staticmethod
@@ -306,11 +361,12 @@ class Exporter:
         return pdf.output(dest='S').encode('latin-1')
 
 # -----------------------------------------------------------------------------
-# 4. UI SEITEN
+# 4. UI SEITEN (TABS)
 # -----------------------------------------------------------------------------
 
 def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn: str):
-    st.subheader("🪚 Smarte Säge 5.1")
+    """Smarte Säge V4.1"""
+    st.subheader("🪚 Smarte Säge 5.2")
     
     # State Healing
     if 'fitting_list' in st.session_state and st.session_state.fitting_list:
@@ -374,7 +430,7 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                 st.markdown(f"<div class='error-box'>Negativmaß!<br>{final:.1f} mm</div>", unsafe_allow_html=True)
             else:
                 st.markdown(f"<div class='success-box'>Sägelänge<br><b>{final:.1f} mm</b></div>", unsafe_allow_html=True)
-                st.caption(f"Details: Teile -{sum_fit:.1f} | Spalt -{sum_gap:.1f} | Dicht. -{sum_gskt:.1f}")
+                st.caption(f"Details: Teile -{sum_fit:.1f} | Spalte -{sum_gap:.1f} | Dicht. -{sum_gskt:.1f}")
                 
                 if st.button("💾 Speichern", type="primary", use_container_width=True):
                     if raw_len > 0:
@@ -420,10 +476,8 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
         angle = cb1.slider("Winkel (°)", 0, 90, 45, key="gb_ang")
         dn_b = cb2.selectbox("DN Bogen", df['DN'], index=6, key="gb_dn")
         
-        # Logik aus Calculator holen (Runde 2: Separation)
         details = calc.calculate_bend_details(dn_b, angle)
         
-        # Anzeige in logischen Gruppen (Runde 3: Informationsgehalt)
         st.divider()
         c_vorbau, c_laengen = st.columns([1, 2])
         
@@ -435,11 +489,11 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
             st.markdown("**Bogenlängen (Material)**")
             cm1, cm2, cm3 = st.columns(3)
             cm1.metric("Außen (Rücken)", f"{details['bogen_aussen']:.1f} mm")
-            # NEU: Bogen Mitte (Runde 1: Funktionalität)
             cm2.metric("Mitte (Neutral)", f"{details['bogen_mitte']:.1f} mm") 
             cm3.metric("Innen (Bauch)", f"{details['bogen_innen']:.1f} mm")
 
 def render_logbook(df_pipe: pd.DataFrame):
+    """Rohrbuch V2.1"""
     st.subheader("📝 Digitales Rohrbuch")
     
     with st.expander("Eintrag hinzufügen", expanded=True):
@@ -483,16 +537,84 @@ def render_logbook(df_pipe: pd.DataFrame):
                 DatabaseRepository.delete_entries(to_del['id'].tolist())
                 st.rerun()
 
-def render_handbook(calc, dn, pn):
+def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
+    """
+    NEU V5.0: Smart Data Hub für den Großleitungsbau.
+    """
     row = calc.get_row(dn)
     suffix = "_16" if pn == "PN 16" else "_10"
-    st.subheader(f"Tabellenbuch DN {dn}")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Außen-Ø", f"{row['D_Aussen']} mm")
-    c1.metric("Radius", f"{row['Radius_BA3']} mm")
-    c2.metric("Blattstärke", f"{row[f'Flansch_b{suffix}']} mm")
-    c2.metric("Lochkreis", f"{row[f'LK_k{suffix}']} mm")
-    c3.info(f"{row[f'Lochzahl{suffix}']}x {row[f'Schraube_M{suffix}']}")
+    
+    st.subheader(f"📚 Smart Data: DN {dn} / {pn}")
+
+    # Basisdaten
+    od = float(row['D_Aussen'])
+    flange_b = float(row[f'Flansch_b{suffix}'])
+    lk = float(row[f'LK_k{suffix}'])
+    bolt = row[f'Schraube_M{suffix}']
+    n_holes = int(row[f'Lochzahl{suffix}'])
+    
+    # MODUL 1: ROHR & LASTEN
+    with st.expander("🏗️ Rohrgewichte & Hydrotest (Kran/Gerüst)", expanded=True):
+        c_in1, c_in2 = st.columns([1, 2])
+        
+        with c_in1:
+            wt_input = st.number_input("Wandstärke (mm)", value=6.3, min_value=1.0, step=0.1)
+            len_input = st.number_input("Rohrlänge (m)", value=6.0, step=0.5)
+            
+        with c_in2:
+            w_data = HandbookCalculator.calculate_weight(od, wt_input, len_input * 1000)
+            mc1, mc2, mc3 = st.columns(3)
+            mc1.metric("Leergewicht (Stahl)", f"{w_data['total_steel']:.1f} kg", f"{w_data['kg_per_m_steel']:.1f} kg/m")
+            mc2.metric("Gewicht Gefüllt", f"{w_data['total_filled']:.1f} kg", "für Hydrotest")
+            mc3.metric("Füllvolumen", f"{w_data['volume_l']:.0f} Liter", "Wasserbedarf")
+
+    # MODUL 2: FLANSCH & DICHTUNG
+    c_geo1, c_geo2 = st.columns(2)
+    with c_geo1:
+        st.markdown("#### 📐 Flansch Geometrie")
+        st.write(f"**Blattstärke:** {flange_b} mm")
+        st.write(f"**Lochkreis:** {lk} mm")
+        st.write(f"**Lochzahl:** {n_holes} x {bolt}")
+        st.progress(lk / (od + 100), text=f"Lochkreis Verhältnis")
+
+    with c_geo2:
+        st.markdown("#### 🔘 Dichtung (Check)")
+        d_innen = od - (2*wt_input) 
+        d_aussen = lk - (int(bolt.replace("M","")) * 1.5)
+        st.info(f"* Innen-Ø: ~{d_innen:.0f} mm\n* Außen-Ø: ~{d_aussen:.0f} mm\n* Dicke: 2.0 mm (Std)")
+
+    st.divider()
+
+    # MODUL 3: MONTAGEMANAGER
+    st.markdown("#### 🔧 Montage & Drehmomente (8.8)")
+    cb_col1, cb_col2 = st.columns([1, 2])
+    
+    with cb_col1:
+        st.caption("Konfiguration")
+        conn_type = st.radio("Typ", ["Fest-Fest (V-V)", "Fest-Los (V-L)", "Fest-Blind (V-B)"], index=0)
+        use_washers = st.checkbox("Unterlegscheiben (2x)", value=True)
+        gasket_thk = st.number_input("Dichtung (mm)", value=2.0, step=0.5)
+        
+    with cb_col2:
+        bolt_info = HandbookCalculator.BOLT_DATA.get(bolt, [0, 0, 0])
+        sw, nm_dry, nm_lube = bolt_info
+        
+        t1 = flange_b
+        t2 = flange_b 
+        if "Los" in conn_type: t2 = flange_b + 5 
+        elif "Blind" in conn_type: t2 = flange_b + (dn * 0.02)
+            
+        n_washers = 2 if use_washers else 0
+        calc_len = HandbookCalculator.get_bolt_length(t1, t2, bolt, n_washers, gasket_thk)
+        
+        res_c1, res_c2, res_c3 = st.columns(3)
+        res_c1.markdown(f"<div class='success-box' style='padding:10px'>🔩 Bolzen<br><b>{bolt} x {calc_len}</b><br><span style='font-size:0.8em'>{n_holes} Stk.</span></div>", unsafe_allow_html=True)
+        res_c2.markdown(f"<div class='info-box' style='text-align:center'>🔧 Schlüssel<br><b>SW {sw} mm</b><br><span style='font-size:0.8em'>Nuss/Ring</span></div>", unsafe_allow_html=True)
+        
+        is_lubed = st.toggle("Geschmiert (MoS2)?", value=True)
+        torque = nm_lube if is_lubed else nm_dry
+        style_col = "#dcfce7" if is_lubed else "#fee2e2"
+        res_c3.markdown(f"<div style='background-color:{style_col}; padding:10px; border-radius:8px; text-align:center; border:1px solid #ccc'>💪 Moment<br><b>{torque} Nm</b><br><span style='font-size:0.8em'>{'Geschmiert' if is_lubed else 'Trocken'}</span></div>", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
 # 5. MAIN
@@ -508,12 +630,12 @@ def main():
         dn = st.selectbox("Nennweite", df_pipe['DN'], index=8)
         pn = st.radio("Druckstufe", ["PN 16", "PN 10"], horizontal=True)
 
-    t1, t2, t3, t4 = st.tabs(["🪚 Smarte Säge", "📐 Geometrie", "📝 Rohrbuch", "📘 Daten"])
+    t1, t2, t3, t4 = st.tabs(["🪚 Smarte Säge", "📐 Geometrie", "📝 Rohrbuch", "📚 Smart Data"])
     
     with t1: render_smart_saw(calc, df_pipe, dn, pn)
     with t2: render_geometry_tools(calc, df_pipe)
     with t3: render_logbook(df_pipe)
-    with t4: render_handbook(calc, dn, pn)
+    with t4: render_tab_handbook(calc, dn, pn)
 
 if __name__ == "__main__":
     main()
