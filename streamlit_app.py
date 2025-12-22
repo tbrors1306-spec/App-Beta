@@ -15,14 +15,42 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-# --- OPTIONAL IMPORTS: FPDF ---
+# -----------------------------------------------------------------------------
+# 0. SICHERE IMPORTS (DEFENSIVE PROGRAMMIERUNG)
+# -----------------------------------------------------------------------------
+# Wir definieren die Flags ZUERST, damit sie immer existieren (verhindert NameError)
+PDF_AVAILABLE = False
+AGGRID_AVAILABLE = False
+
+# Import FPDF
 try:
     from fpdf import FPDF
     PDF_AVAILABLE = True
-except ImportError:
+except (ImportError, ModuleNotFoundError):
     PDF_AVAILABLE = False
 
-# --- CONFIGURATION ---
+# Import AgGrid mit Dummy-Fallback
+# Wir initialisieren Dummies, damit der Code nicht abstürzt, wenn AgGrid fehlt
+AgGrid = None
+GridOptionsBuilder = None
+GridUpdateMode = None
+JsCode = None
+DataReturnMode = None
+
+try:
+    from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode, DataReturnMode
+    AGGRID_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    AGGRID_AVAILABLE = False
+except Exception as e:
+    # Fängt auch andere Fehler beim Import ab (z.B. Syntaxfehler in veralteten Libs)
+    logging.warning(f"AgGrid konnte nicht geladen werden: {e}")
+    AGGRID_AVAILABLE = False
+
+# -----------------------------------------------------------------------------
+# 1. KONFIGURATION
+# -----------------------------------------------------------------------------
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("PipeCraft_V2_6")
 
@@ -864,7 +892,6 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
         st.markdown("#### 📋 Schnittliste")
         
         # 1. PLATZHALTER FÜR DIE BUTTONS (Damit sie OBEN erscheinen)
-        # Wir definieren den Container hier, füllen ihn aber erst NACHDEM wir wissen, was ausgewählt wurde.
         action_bar = st.container()
 
         if not st.session_state.saved_cuts:
@@ -1126,16 +1153,20 @@ def render_logbook(df_pipe: pd.DataFrame):
 
     st.markdown(f"<div class='project-tag'>📍 PROJEKT: {proj_name} (ID: {active_pid})</div>", unsafe_allow_html=True)
 
+    # 1. LOGIK: WAS WURDE AUSGEWÄHLT? (BULK vs. SINGLE)
     bulk_ids = st.session_state.get('bulk_edit_ids', [])
     
+    # FORMULAR-BEREICH
     if not is_archived:
         if len(bulk_ids) > 1:
+            # --- A) BULK EDIT UI (Mehrere ausgewählt) ---
             st.warning(f"⚡ MASSEN-BEARBEITUNG: {len(bulk_ids)} Einträge ausgewählt")
             with st.container(border=True):
                 c_bulk1, c_bulk2, c_bulk3 = st.columns([1, 2, 1])
                 target_field = c_bulk1.selectbox("Feld ändern:", ["Schweißer", "APZ / Charge", "ISO", "Datum"])
                 
                 new_value = ""
+                # Dynamische Smart Input Logik
                 if target_field == "Datum":
                     d_val = c_bulk2.date_input("Neues Datum", datetime.now())
                     new_value = d_val.strftime("%d.%m.%Y")
@@ -1149,7 +1180,7 @@ def render_logbook(df_pipe: pd.DataFrame):
                 if c_bulk3.button("🚀 Alle ändern", type="primary"):
                     DatabaseRepository.bulk_update(bulk_ids, target_field, new_value)
                     st.success(f"{len(bulk_ids)} Einträge aktualisiert!")
-                    st.session_state.bulk_edit_ids = []
+                    st.session_state.bulk_edit_ids = [] # Reset nach Erfolg
                     st.rerun()
                 
                 if st.button("Abbrechen (Auswahl aufheben)"):
@@ -1157,6 +1188,7 @@ def render_logbook(df_pipe: pd.DataFrame):
                     st.rerun()
 
         else:
+            # --- B) SINGLE EDIT UI (Einer oder keiner ausgewählt) ---
             if len(bulk_ids) == 1:
                 if st.session_state.editing_id != bulk_ids[0]:
                     st.session_state.editing_id = bulk_ids[0]
@@ -1166,6 +1198,7 @@ def render_logbook(df_pipe: pd.DataFrame):
             with st.container(border=True):
                 st.markdown(f"#### {header_text}")
                 
+                # Defaults
                 def_iso = st.session_state.last_iso if not st.session_state.editing_id else ""
                 def_sch = st.session_state.last_schweisser if not st.session_state.editing_id else ""
                 def_apz = st.session_state.last_apz if not st.session_state.editing_id else ""
@@ -1173,12 +1206,15 @@ def render_logbook(df_pipe: pd.DataFrame):
 
                 c1, c2, c3 = st.columns(3)
                 
+                # ISO
                 current_iso = st.session_state.form_iso if st.session_state.editing_id else def_iso
                 iso_val = render_smart_input("ISO / Bez.", "iso", current_iso, "main_iso", active_pid)
 
+                # Naht
                 if 'form_naht' not in st.session_state: st.session_state.form_naht = ""
                 naht_val = c2.text_input("Naht", value=st.session_state.form_naht, key="inp_naht")
                 
+                # Datum
                 if 'form_datum' not in st.session_state: st.session_state.form_datum = def_dat
                 if isinstance(st.session_state.form_datum, str):
                       try: st.session_state.form_datum = datetime.strptime(st.session_state.form_datum, "%d.%m.%Y").date()
@@ -1187,12 +1223,14 @@ def render_logbook(df_pipe: pd.DataFrame):
                 
                 c4, c5, c6 = st.columns(3)
                 
+                # Bauteil
                 if 'form_bauteil_idx' not in st.session_state: st.session_state.form_bauteil_idx = 0
                 bt_idx = st.session_state.form_bauteil_idx
                 bt_options = ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Reduzierung", "Stutzen", "Passstück", "Nippel", "Muffe"]
                 if bt_idx >= len(bt_options): bt_idx = 0
                 bt_val = c4.selectbox("Bauteil", bt_options, index=bt_idx, key="inp_bt")
                 
+                # DN
                 if 'form_dn_idx' not in st.session_state: st.session_state.form_dn_idx = 8
                 dn_idx = st.session_state.form_dn_idx
                 if dn_idx >= len(df_pipe): dn_idx = 8
@@ -1207,11 +1245,13 @@ def render_logbook(df_pipe: pd.DataFrame):
                 else:
                     final_dim_str = f"DN {dn_val}"
 
+                # Länge
                 if 'form_len' not in st.session_state: st.session_state.form_len = 0.0
                 len_val = c6.number_input("Länge (mm)", value=float(st.session_state.form_len), step=1.0, key="inp_len") 
                 
                 c7, c8 = st.columns(2)
                 
+                # APZ & Schweißer
                 current_apz = st.session_state.form_apz if st.session_state.editing_id else def_apz
                 apz_val = render_smart_input("APZ / Zeugnis", "charge_apz", current_apz, "main_apz", active_pid)
                 
@@ -1220,6 +1260,7 @@ def render_logbook(df_pipe: pd.DataFrame):
                 
                 st.markdown("<br>", unsafe_allow_html=True)
                 
+                # BUTTONS
                 if st.session_state.editing_id:
                     col_save, col_cancel = st.columns([1, 1])
                     if col_save.button("🔄 ÄNDERUNG ÜBERNEHMEN", type="primary", use_container_width=True):
@@ -1230,7 +1271,7 @@ def render_logbook(df_pipe: pd.DataFrame):
                         })
                         st.toast("Eintrag aktualisiert!", icon="✅")
                         st.session_state.editing_id = None
-                        st.session_state.bulk_edit_ids = []
+                        st.session_state.bulk_edit_ids = [] # Clear selection
                         st.session_state.form_iso = ""
                         st.session_state.form_naht = ""
                         st.session_state.form_len = 0.0
@@ -1260,6 +1301,7 @@ def render_logbook(df_pipe: pd.DataFrame):
 
     st.divider()
     
+    # 2. TABELLE / LISTE
     df = DatabaseRepository.get_logbook_by_project(active_pid)
     
     if not df.empty:
@@ -1283,6 +1325,7 @@ def render_logbook(df_pipe: pd.DataFrame):
         else:
             st.session_state.logbook_view_index = 0
 
+        # --- BRANCH A: AG-GRID (MANUAL MODE FOR BULK STABILITY) ---
         if view_mode_sel == "Tabelle (AgGrid)":
             if AGGRID_AVAILABLE:
                 st.info("💡 **Anleitung:** Wähle mehrere Zeilen aus. Klicke DANN oben rechts auf den kleinen **'Update'** Knopf in der Tabelle, um die Auswahl zu bestätigen!")
@@ -1294,6 +1337,7 @@ def render_logbook(df_pipe: pd.DataFrame):
                 
                 gb = GridOptionsBuilder.from_dataframe(df.drop(columns=['✏️', 'Löschen', 'project_id'], errors='ignore'))
                 gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=15)
+                # GroupSelectsChildren erlaubt das Auswählen ganzer Gruppen
                 gb.configure_selection('multiple', use_checkbox=True, groupSelectsChildren=True)
                 gb.configure_default_column(editable=False, groupable=True)
                 gb.configure_grid_options(quickFilterText=filter_text_grid) 
@@ -1310,9 +1354,8 @@ def render_logbook(df_pipe: pd.DataFrame):
                 
                 grid_options = gb.build()
                 
-                # LAZY IMPORT / SAFE MODE
-                from st_aggrid import AgGrid, GridUpdateMode, DataReturnMode
-                
+                # --- WICHTIG: UPDATE MODE MANUAL ---
+                # Das verhindert den Refresh nach jedem Klick. Der Nutzer muss "Update" klicken.
                 grid_response = AgGrid(
                     df, 
                     gridOptions=grid_options,
@@ -1360,7 +1403,8 @@ def render_logbook(df_pipe: pd.DataFrame):
                         except: st.session_state.form_datum = datetime.now().date()
                         
                         bt_options = ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Reduzierung", "Stutzen", "Passstück", "Nippel", "Muffe"]
-                        try: st.session_state.form_bauteil_idx = bt_options.index(sel_row.get('bauteil', 'Rohrstoß'))
+                        val_bt = sel_row.get('bauteil', 'Rohrstoß')
+                        try: st.session_state.form_bauteil_idx = bt_options.index(val_bt)
                         except: st.session_state.form_bauteil_idx = 0
                         
                         dim_str = str(sel_row.get('dimension', ''))
@@ -1402,11 +1446,13 @@ def render_logbook(df_pipe: pd.DataFrame):
                     c1.write(f"**{row['iso']}**")
                     c1.caption(f"Naht: {row['naht']}")
                     
+                    # FIX: APZ ANZEIGE HINZUGEFÜGT
                     c2.write(f"{row['datum']}")
                     apz_txt = row['charge_apz'] if row['charge_apz'] else "⚠️ APZ fehlt"
                     c2.caption(f"APZ: {apz_txt}")
                     
                     c3.write(f"{row['bauteil']}")
+                    # FIX: SCHWEISSER ICON
                     c3.caption(f"{row['dimension']} | 🧑‍🏭 {row['schweisser']}")
                     
                     if not is_archived:
