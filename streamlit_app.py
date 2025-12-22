@@ -847,339 +847,6 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
 
     # --- LINKER BEREICH: RECHNER ---
     with c_calc:
-        with st.container(border=True):
-            st.markdown("**1. Neuer Schnitt**")
-            cut_name = st.text_input("Bezeichnung / Spool", placeholder="z.B. Strang A - 01", help="Name für die Liste")
-            raw_len = st.number_input("Schnittmaß (Roh) [mm]", value=default_raw, min_value=0.0, step=10.0, format="%.1f")
-            
-            cg1, cg2, cg3 = st.columns(3)
-            gap = cg1.number_input("Spalt (mm)", value=3.0, step=0.5)
-            dicht_anz = cg2.number_input("Dichtungen", 0, 5, 0)
-            dicht_thk = cg3.number_input("Dicke (mm)", 0.0, 5.0, 2.0, disabled=(dicht_anz==0))
-            st.divider()
-            st.markdown("**Bauteil-Abzüge (Fittings)**")
-            ca1, ca2, ca3, ca4 = st.columns([2, 1.5, 1, 1])
-            f_type = ca1.selectbox("Typ", ["Bogen 90° (BA3)", "Bogen (Zuschnitt)", "Flansch (Vorschweiß)", "T-Stück", "Reduzierung"], label_visibility="collapsed")
-            f_dn = ca2.selectbox("DN", df['DN'], index=df['DN'].tolist().index(current_dn), label_visibility="collapsed")
-            f_cnt = ca3.number_input("Anz.", 1, 10, 1, label_visibility="collapsed")
-            f_ang = 90.0
-            if "Zuschnitt" in f_type: f_ang = st.slider("Winkel", 0, 90, 45)
-
-            if ca4.button("➕", type="primary"):
-                deduct = calc.get_deduction(f_type, f_dn, pn, f_ang)
-                uid = f"{len(st.session_state.fitting_list)}_{datetime.now().timestamp()}"
-                nm = f"{f_type} DN{f_dn}" + (f" ({f_ang}°)" if "Zuschnitt" in f_type else "")
-                st.session_state.fitting_list.append(FittingItem(uid, nm, f_cnt, deduct, f_dn))
-                st.rerun()
-
-            if st.session_state.fitting_list:
-                st.markdown("###### Aktuelle Abzüge:")
-                for i, item in enumerate(st.session_state.fitting_list):
-                    cr1, cr2, cr3 = st.columns([3, 1.5, 0.5])
-                    cr1.text(f"{item.count}x {item.name}")
-                    cr2.text(f"-{item.total_deduction:.1f}")
-                    if cr3.button("x", key=f"d_{item.id}"):
-                        st.session_state.fitting_list.pop(i)
-                        st.rerun()
-                if st.button("Reset Abzüge", type="secondary"):
-                    st.session_state.fitting_list = []
-                    st.rerun()
-
-        sum_fit = sum(i.total_deduction for i in st.session_state.fitting_list)
-        sum_gap = sum(i.count for i in st.session_state.fitting_list) * gap
-        sum_gskt = dicht_anz * dicht_thk
-        total = sum_fit + sum_gap + sum_gskt
-        final = raw_len - total
-
-        if final < 0: 
-            st.error(f"Negativmaß! ({final:.1f} mm)")
-        else:
-            st.metric("Sägelänge", f"{final:.1f} mm", delta=None)
-            st.caption(f"Abzüge: Teile -{sum_fit:.1f} | Spalte -{sum_gap:.1f} | Dicht. -{sum_gskt:.1f}")
-            if st.button("💾 SPEICHERN", type="primary", use_container_width=True):
-                if raw_len > 0:
-                    # FIX (Phase 2): ID Generation via Timestamp für absolute Uniqueness
-                    final_name = cut_name if cut_name.strip() else f"Schnitt"
-                    current_fittings_copy = list(st.session_state.fitting_list)
-                    
-                    # ID ist jetzt Zeitstempel (int), Kollisionssicher
-                    new_id = int(time.time() * 1000) 
-                    
-                    new_cut = SavedCut(new_id, final_name, raw_len, final, f"{len(current_fittings_copy)} Teile", datetime.now().strftime("%H:%M"), current_fittings_copy)
-                    
-                    st.session_state.saved_cuts.append(new_cut)
-                    st.session_state.fitting_list = [] 
-                    
-                    # FIX (Phase 2): Toast statt Banner
-                    st.toast("✅ Schnitt gespeichert!", icon="💾")
-                    time.sleep(0.5)
-                    st.rerun()
-
-    # --- RECHTER BEREICH: LISTE (OPTIMIERT HYBRID) ---
-    with c_list:
-        st.markdown("#### 📋 Schnittliste")
-        
-        # 1. PLATZHALTER FÜR DIE BUTTONS (Damit sie OBEN erscheinen)
-        action_bar = st.container()
-
-        if not st.session_state.saved_cuts:
-            st.info("Noch keine Schnitte vorhanden.")
-            with action_bar:
-                st.button("🗑️ Löschen", disabled=True, use_container_width=True)
-        else:
-            # Daten vorbereiten
-            data = [asdict(c) for c in st.session_state.saved_cuts]
-            df_s = pd.DataFrame(data)
-            if 'Auswahl' not in df_s.columns:
-                df_s['Auswahl'] = False
-            
-            df_display = df_s[['Auswahl', 'name', 'raw_length', 'cut_length', 'details', 'id']]
-            
-            # 2. TABELLE RENDERN (st.data_editor ist STABIL)
-            edited_df = st.data_editor(
-                df_display, 
-                hide_index=True, 
-                use_container_width=True,
-                column_config={
-                    "Auswahl": st.column_config.CheckboxColumn("☑️", width="small", default=False),
-                    "name": st.column_config.TextColumn("Bez.", width="medium"), 
-                    "raw_length": st.column_config.NumberColumn("Roh", format="%.0f"), 
-                    "cut_length": st.column_config.NumberColumn("Säge", format="%.1f", width="medium"), 
-                    "details": st.column_config.TextColumn("Info", width="small"), 
-                    "id": None
-                },
-                disabled=["name", "raw_length", "cut_length", "details", "id"], 
-                key="saw_editor_v4"
-            )
-            
-            # 3. AUSWAHL PRÜFEN
-            selected_rows = edited_df[edited_df['Auswahl'] == True]
-            selected_ids = selected_rows['id'].tolist()
-            num_sel = len(selected_ids)
-            
-            # 4. BUTTONS IM OBEREN CONTAINER RENDERN
-            with action_bar:
-                # Buttons sind disabled, wenn num_sel == 0
-                btns_disabled = (num_sel == 0)
-                
-                # Layout für die Action Bar
-                col_del, col_trans, col_excel = st.columns([1, 1, 1])
-                
-                # Löschen Button
-                if col_del.button(f"🗑️ Löschen ({num_sel})", disabled=btns_disabled, type="secondary", use_container_width=True):
-                    # FIX (Phase 2): Löschen basierend auf ID ist hier sicher
-                    st.session_state.saved_cuts = [c for c in st.session_state.saved_cuts if c.id not in selected_ids]
-                    st.toast(f"🗑️ {num_sel} Einträge gelöscht!", icon="🗑️")
-                    time.sleep(0.5)
-                    st.rerun()
-                
-                # Übertragen Button
-                if col_trans.button(f"📝 Übertragen ({num_sel})", disabled=btns_disabled, type="primary", use_container_width=True, help="Überträgt Rohr + Anbauteile ins Rohrbuch"):
-                    count_pipes = 0
-                    count_fits = 0
-                    for cut in st.session_state.saved_cuts:
-                        if cut.id in selected_ids:
-                            # 1. Rohrstoß eintragen
-                            DatabaseRepository.add_entry({
-                                "iso": cut.name, "naht": "", "datum": datetime.now().strftime("%d.%m.%Y"),
-                                "dimension": f"DN {current_dn}", "bauteil": "Rohrstoß", "laenge": cut.cut_length,
-                                "charge": "", "charge_apz": "", "schweisser": "", "project_id": active_pid
-                            })
-                            count_pipes += 1
-                            # 2. Fittings eintragen
-                            for fit in cut.fittings:
-                                fit_name_clean = fit.name.split(" DN")[0]
-                                for _ in range(fit.count):
-                                    DatabaseRepository.add_entry({
-                                        "iso": cut.name, "naht": "", "datum": datetime.now().strftime("%d.%m.%Y"),
-                                        "dimension": f"DN {fit.dn}", "bauteil": fit_name_clean, "laenge": 0.0,
-                                        "charge": "", "charge_apz": "", "schweisser": "", "project_id": active_pid
-                                    })
-                                    count_fits += 1
-                    
-                    # FIX (Phase 2): Toast statt Banner
-                    st.toast(f"✅ {count_pipes} Rohre und {count_fits} Fittings übertragen!", icon="📦")
-                    time.sleep(0.5)
-
-                # Excel Button
-                fname_base = f"Saege_{proj_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}"
-                excel_data = Exporter.to_excel(df_s)
-                col_excel.download_button("📥 Excel (Alle)", excel_data, f"{fname_base}.xlsx", use_container_width=True)
-
-            # Reset Button ganz unten
-            st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
-            if st.button("Alles Reset (Liste leeren)", type="secondary"):
-                st.session_state.saved_cuts = []
-                st.rerun()
-
-def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
-    st.markdown('<div class="machine-header-geo">📐 GEOMETRIE & BERECHNUNG</div>', unsafe_allow_html=True)
-    geo_tabs = st.tabs(["2D Etage (S-Schlag)", "3D Raum-Etage (Rolling)", "Bogen (Standard)", "🦞 Segment-Bogen", "Stutzen"])
-    
-    with geo_tabs[0]:
-        c1, c2 = st.columns([1, 2])
-        with c1:
-            with st.container(border=True):
-                dn = st.selectbox("Nennweite", df['DN'], index=5, key="2d_dn")
-                offset = st.number_input("Versprung (H) [mm]", value=500.0, step=10.0, key="2d_off")
-                angle = st.selectbox("Fittings (°)", [30, 45, 60], index=1, key="2d_ang")
-                if st.button("Berechnen 2D", type="primary", use_container_width=True):
-                    res = calc.calculate_2d_offset(dn, offset, angle)
-                    st.session_state.calc_res_2d = res 
-        
-        with c2:
-            if 'calc_res_2d' in st.session_state:
-                res = st.session_state.calc_res_2d
-                if "error" in res: st.error(res["error"])
-                else:
-                    st.markdown("**Ergebnis**")
-                    m1, m2 = st.columns(2)
-                    m1.metric("Zuschnitt (Rohr)", f"{res['cut_length']:.1f} mm")
-                    m2.metric("Etagenlänge", f"{res['hypotenuse']:.1f} mm")
-                    st.info(f"Benötigter Platz (Länge): {res['run']:.1f} mm")
-                    
-                    if st.button("➡️ An Säge (2D)", key="btn_2d_saw"):
-                        st.session_state.transfer_cut_length = res['cut_length']
-                        st.toast("✅ Maß an Säge übertragen!", icon="📏")
-                    
-                    fig_2d = Visualizer.plot_2d_offset(res['run'], res['offset'])
-                    st.pyplot(fig_2d, use_container_width=False)
-
-    with geo_tabs[1]:
-        col_in, col_out, col_vis = st.columns([1, 1, 1.5]) 
-        with col_in:
-            with st.container(border=True):
-                st.markdown("**Eingabe**")
-                dn_roll = st.selectbox("Nennweite", df['DN'], index=5, key="3d_dn")
-                fit_angle = st.selectbox("Fitting Typ", [45, 60, 90], index=0, key="3d_ang")
-                set_val = st.number_input("Versprung Höhe (Set)", value=300.0, min_value=0.0, step=10.0)
-                roll_val = st.number_input("Versprung Seite (Roll)", value=400.0, min_value=0.0, step=10.0)
-                
-                true_offset = math.sqrt(set_val**2 + roll_val**2)
-                rad_angle = math.radians(fit_angle)
-                if rad_angle > 0:
-                    travel_center = true_offset / math.sin(rad_angle)
-                    run_length = true_offset / math.tan(rad_angle)
-                else:
-                    travel_center = 0; run_length = 0
-                deduct_single = calc.get_deduction(f"Bogen (Zuschnitt)", dn_roll, "PN 16", fit_angle) 
-                cut_len = travel_center - (2 * deduct_single)
-                if set_val == 0 and roll_val == 0: rot_angle = 0.0
-                elif set_val == 0: rot_angle = 90.0
-                else: rot_angle = math.degrees(math.atan(roll_val / set_val))
-
-        with col_out:
-            st.markdown("**Ergebnis**")
-            st.metric("Zuschnitt (Rohr)", f"{cut_len:.1f} mm")
-            st.caption(f"Einbaumaß (Mitte-Mitte): {travel_center:.1f} mm")
-            st.metric("Baulänge (Run)", f"{run_length:.1f} mm", help="Platzbedarf in Längsrichtung")
-            st.metric("Verdrehung", f"{rot_angle:.1f} °", "aus der Senkrechten")
-            if cut_len < 0: st.error("Nicht baubar! Fittings stoßen zusammen.")
-            else:
-                if st.button("➡️ An Säge (3D)", key="btn_3d_saw"):
-                    st.session_state.transfer_cut_length = cut_len
-                    st.toast("✅ Maß an Säge übertragen!", icon="📏")
-
-        with col_vis:
-            st.markdown("**3D Simulation**")
-            fig_3d = Visualizer.plot_rolling_offset_3d_room(roll_val, run_length, set_val)
-            st.pyplot(fig_3d, use_container_width=False)
-            with st.expander("Verdrehung (Wasserwaage)"):
-                fig_gauge = Visualizer.plot_rotation_gauge(roll_val, set_val, rot_angle)
-                st.pyplot(fig_gauge, use_container_width=False)
-
-    with geo_tabs[2]:
-        with st.container(border=True):
-            st.markdown("#### Standard Bogen-Rechner")
-            cb1, cb2 = st.columns(2)
-            angle = cb1.slider("Winkel", 0, 90, 45, key="gb_ang_std")
-            dn_b = cb2.selectbox("DN", df['DN'], index=6, key="gb_dn_std")
-            details = calc.calculate_bend_details(dn_b, angle)
-        
-        c_v, c_l = st.columns([1, 2])
-        with c_v: st.metric("Vorbau (Z-Maß)", f"{details['vorbau']:.1f} mm")
-        with c_l:
-            cm1, cm2, cm3 = st.columns(3)
-            cm1.metric("Rücken", f"{details['bogen_aussen']:.1f}")
-            cm2.metric("Mitte", f"{details['bogen_mitte']:.1f}") 
-            cm3.metric("Bauch", f"{details['bogen_innen']:.1f}")
-
-    with geo_tabs[3]:
-        st.info("🦞 Berechnung für Segmentbögen (Lobster Back) ohne Standard-Fittings.")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            dn_seg = st.selectbox("Nennweite", df['DN'], index=8, key="seg_dn")
-            radius_seg = st.number_input("Radius (R) [mm]", value=1000.0, step=10.0)
-        with c2:
-            num_seg = st.number_input("Anzahl Segmente (Ganze)", value=3, min_value=2, step=1)
-            total_ang = st.number_input("Gesamtwinkel", value=90.0, step=5.0)
-        with c3:
-            if st.button("Berechnen 🦞", type="primary"):
-                res = calc.calculate_segment_bend(dn_seg, radius_seg, num_seg, total_ang)
-                st.session_state.calc_res_seg = res
-        
-        if 'calc_res_seg' in st.session_state:
-            res = st.session_state.calc_res_seg
-            if "error" in res:
-                st.error(res["error"])
-            else:
-                st.divider()
-                with st.container(border=True):
-                    c_res1, c_res2 = st.columns([1, 1])
-                    with c_res1:
-                        st.markdown("#### Mittelstück (Ganz)")
-                        st.metric("Rücken (L_aussen)", f"{res['mid_back']:.1f} mm")
-                        st.metric("Bauch (L_innen)", f"{res['mid_belly']:.1f} mm")
-                        st.caption(f"Schnittwinkel: {res['miter_angle']:.2f}°")
-                    with c_res2:
-                        st.markdown("#### Endstück (Halb)")
-                        st.metric("Rücken bis Schnitt", f"{res['end_back']:.1f} mm")
-                        st.metric("Bauch bis Schnitt", f"{res['end_belly']:.1f} mm")
-                fig_seg = Visualizer.plot_segment_schematic(res['mid_back'], res['mid_belly'], res['od'], res['miter_angle'])
-                st.pyplot(fig_seg, use_container_width=False)
-
-    with geo_tabs[4]:
-        c1, c2 = st.columns(2)
-        dn_stub = c1.selectbox("DN Stutzen", df['DN'], index=5, key="gs_dn1")
-        dn_main = c2.selectbox("DN Hauptrohr", df['DN'], index=8, key="gs_dn2")
-        if c1.button("Berechnen Stutzen"):
-            try:
-                df_c = calc.calculate_stutzen_coords(dn_main, dn_stub)
-                fig = Visualizer.plot_stutzen(dn_main, dn_stub, df)
-                c_r1, c_r2 = st.columns([1, 2])
-                with c_r1: st.table(df_c)
-                # FIX #2: Check ob Plot existiert (verhindert Absturz bei None)
-                with c_r2: 
-                    if fig:
-                        st.pyplot(fig)
-                    else:
-                        st.error("⚠️ Geometrie ungültig")
-            except ValueError as e: st.error(str(e))
-
-def render_mto_tab(active_pid: int, proj_name: str):
-    st.markdown('<div class="machine-header-doc">📦 MATERIAL MANAGER</div>', unsafe_allow_html=True)
-    st.markdown(f"<div class='project-tag'>📍 PROJEKT: {proj_name}</div>", unsafe_allow_html=True)
-    df_log = DatabaseRepository.get_logbook_by_project(active_pid)
-    if df_log.empty:
-        st.info("Keine Daten im Rohrbuch. Das Materiallager ist leer.")
-        return
-    mto_df = MaterialManager.generate_mto(df_log)
-    if not mto_df.empty:
-        with st.container(border=True):
-            total_items = len(mto_df)
-            total_meters = mto_df[mto_df['Einheit']=='m']['Menge'].sum()
-            c1, c2 = st.columns(2)
-            c1.metric("Positionen", total_items, "verschiedene Artikel")
-            c2.metric("Verrohrung gesamt", f"{total_meters:.1f} m", "Laufmeter")
-        
-        st.divider()
-        fname = f"MTO_{proj_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.xlsx"
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            mto_df.to_excel(writer, index=False, sheet_name='Materialauszug')
-        st.download_button("📥 MTO als Excel herunterladen", output.getvalue(), fname, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
-        st.dataframe(mto_df, use_container_width=True, hide_index=True)
-
 def render_logbook(df_pipe: pd.DataFrame):
     st.markdown('<div class="machine-header-doc">📝 ROHRBUCH</div>', unsafe_allow_html=True)
     
@@ -1192,6 +859,7 @@ def render_logbook(df_pipe: pd.DataFrame):
     bulk_ids = st.session_state.get('bulk_edit_ids', [])
     
     if not is_archived:
+        # --- MASSEN-BEARBEITUNG BLOCK ---
         if len(bulk_ids) > 1:
             st.warning(f"⚡ MASSEN-BEARBEITUNG: {len(bulk_ids)} Einträge ausgewählt")
             with st.container(border=True):
@@ -1220,6 +888,7 @@ def render_logbook(df_pipe: pd.DataFrame):
                     st.session_state.bulk_edit_ids = []
                     st.rerun()
 
+        # --- EINZEL-BEARBEITUNG BLOCK ---
         else:
             if len(bulk_ids) == 1:
                 if st.session_state.editing_id != bulk_ids[0]:
@@ -1230,6 +899,7 @@ def render_logbook(df_pipe: pd.DataFrame):
             with st.container(border=True):
                 st.markdown(f"#### {header_text}")
                 
+                # Logic to determine default values...
                 def_iso = st.session_state.last_iso if not st.session_state.editing_id else ""
                 def_sch = st.session_state.last_schweisser if not st.session_state.editing_id else ""
                 def_apz = st.session_state.last_apz if not st.session_state.editing_id else ""
@@ -1349,16 +1019,27 @@ def render_logbook(df_pipe: pd.DataFrame):
         else:
             st.session_state.logbook_view_index = 0
 
+        # --- AGGRID ANSICHT ---
         if view_mode_sel == "Tabelle (AgGrid)":
-            # FIX: Nur rendern, wenn global verfügbar. Kein lokaler Import mehr.
             if AGGRID_AVAILABLE:
-                st.info("💡 **Anleitung:** Wähle mehrere Zeilen aus. Klicke DANN oben rechts auf den kleinen **'Update'** Knopf in der Tabelle, um die Auswahl zu bestätigen!")
+                st.info("💡 **Tipp:** Nutze die Checkboxen zur Mehrfachauswahl. Klicke dann rechts oben auf den kleinen **'Update'** Knopf.")
                 
                 filter_text_grid = st.text_input("🔍 Tabelle durchsuchen", placeholder="Suchbegriff eingeben...", key="grid_search")
                 
                 gb = GridOptionsBuilder.from_dataframe(df.drop(columns=['✏️', 'Löschen', 'project_id'], errors='ignore'))
+                
+                # --- FIX: MULTI-SELECT REPARATUR ---
+                gb.configure_selection(
+                    selection_mode='multiple', 
+                    use_checkbox=True, 
+                    groupSelectsChildren=True,
+                    headerCheckboxSelection=True,
+                    headerCheckboxSelectionFilteredOnly=True,
+                    suppressRowClickSelection=True  # <--- DIESE ZEILE IST ENTSCHEIDEND!
+                )
+                # -----------------------------------
+
                 gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=15)
-                gb.configure_selection('multiple', use_checkbox=True, groupSelectsChildren=True)
                 gb.configure_default_column(editable=False, groupable=True)
                 gb.configure_grid_options(quickFilterText=filter_text_grid) 
 
@@ -1374,7 +1055,6 @@ def render_logbook(df_pipe: pd.DataFrame):
                 
                 grid_options = gb.build()
                 
-                # AgGrid Call - Sicher, weil wir im "if AGGRID_AVAILABLE" Block sind
                 grid_response = AgGrid(
                     df, 
                     gridOptions=grid_options,
@@ -1401,9 +1081,11 @@ def render_logbook(df_pipe: pd.DataFrame):
                 current_bulk_set = set(st.session_state.bulk_edit_ids)
                 new_bulk_set = set(selected_ids_list)
                 
+                # Wenn sich die Auswahl geändert hat (durch Klick auf Update)
                 if current_bulk_set != new_bulk_set:
                     st.session_state.bulk_edit_ids = selected_ids_list
                     
+                    # Bei genau einer Auswahl -> Formular füllen
                     if len(selected_ids_list) == 1:
                         sel_row = None
                         if isinstance(selected, pd.DataFrame): sel_row = selected.iloc[0].to_dict()
@@ -1448,7 +1130,7 @@ def render_logbook(df_pipe: pd.DataFrame):
             else:
                 st.warning("⚠️ AgGrid Bibliothek nicht gefunden. Bitte wechsle zur 'Liste (Mobil)' Ansicht.")
 
-        # --- BRANCH B: LIST VIEW (MOBILE) ---
+        # --- LIST VIEW (MOBILE) ---
         else:
             filter_text = st.text_input("🔍 Suchen (ISO, Naht...)", placeholder="Filter...")
             if filter_text:
@@ -1458,247 +1140,4 @@ def render_logbook(df_pipe: pd.DataFrame):
 
             h1, h2, h3, h4, h5 = st.columns([2, 1, 2, 0.5, 0.5])
             h1.caption("ISO / Naht")
-            h2.caption("Datum")
-            h3.caption("Bauteil")
-            
-            for index, row in filtered_df.head(50).iterrows():
-                with st.container(border=True):
-                    c1, c2, c3, c4, c5 = st.columns([2, 1, 2, 0.5, 0.5])
-                    c1.write(f"**{row['iso']}**")
-                    c1.caption(f"Naht: {row['naht']}")
-                    
-                    c2.write(f"{row['datum']}")
-                    apz_txt = row['charge_apz'] if row['charge_apz'] else "⚠️ APZ fehlt"
-                    c2.caption(f"APZ: {apz_txt}")
-                    
-                    c3.write(f"{row['bauteil']}")
-                    c3.caption(f"{row['dimension']} | 🧑‍🏭 {row['schweisser']}")
-                    
-                    if not is_archived:
-                        if c4.button("✏️", key=f"edit_{row['id']}", help="Bearbeiten"):
-                            st.session_state.editing_id = int(row['id'])
-                            st.session_state.bulk_edit_ids = [int(row['id'])]
-                            
-                            st.session_state.form_iso = row['iso']
-                            st.session_state.form_naht = row['naht']
-                            st.session_state.form_apz = row['charge_apz'] if row['charge_apz'] else ""
-                            st.session_state.form_schweisser = row['schweisser'] if row['schweisser'] else ""
-                            st.session_state.form_len = float(row['laenge']) if row['laenge'] else 0.0
-                            try: 
-                                d_str = row['datum']
-                                st.session_state.form_datum = datetime.strptime(d_str, "%d.%m.%Y").date()
-                            except: st.session_state.form_datum = datetime.now().date()
-                            
-                            dim_str = str(row['dimension'])
-                            all_dns = re.findall(r'\d+', dim_str)
-                            if len(all_dns) > 0:
-                                dn_int = int(all_dns[0])
-                                try: st.session_state.form_dn_idx = int(df_pipe[df_pipe['DN'] == dn_int].index[0])
-                                except: st.session_state.form_dn_idx = 8
-                            
-                            bt_options = ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Reduzierung", "Stutzen", "Passstück", "Nippel", "Muffe"]
-                            try: st.session_state.form_bauteil_idx = bt_options.index(row['bauteil'])
-                            except: st.session_state.form_bauteil_idx = 0
-                            st.rerun()
-
-                        if c5.button("🗑️", key=f"del_{row['id']}", help="Löschen"):
-                            DatabaseRepository.delete_entries([row['id']])
-                            st.toast("🗑️ Eintrag gelöscht")
-                            time.sleep(0.5)
-                            st.rerun()
-    else:
-        st.info(f"Keine Einträge für Projekt '{proj_name}'.")
-
-def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
-    st.markdown('<div class="machine-header-doc">📚 SMART DATA</div>', unsafe_allow_html=True)
-    row = calc.get_row(dn)
-    suffix = "_16" if pn == "PN 16" else "_10"
-    st.markdown(f"**DN {dn} / {pn}**")
-
-    od = float(row['D_Aussen'])
-    flange_b = float(row[f'Flansch_b{suffix}'])
-    lk = float(row[f'LK_k{suffix}'])
-    bolt = row[f'Schraube_M{suffix}']
-    n_holes = int(row[f'Lochzahl{suffix}'])
-    
-    with st.container(border=True):
-        st.markdown("##### 🏗️ Gewichte & Hydrotest")
-        c_in1, c_in2 = st.columns([1, 2])
-        with c_in1:
-            wt_input = st.number_input("Wandstärke (mm)", value=6.3, min_value=1.0, step=0.1)
-            len_input = st.number_input("Rohrlänge (m)", value=6.0, step=0.5)
-        with c_in2:
-            w_data = HandbookCalculator.calculate_weight(od, wt_input, len_input * 1000)
-            mc1, mc2, mc3 = st.columns(3)
-            mc1.metric("Leergewicht (Stahl)", f"{w_data['total_steel']:.1f} kg", f"{w_data['kg_per_m_steel']:.1f} kg/m")
-            mc2.metric("Gewicht Gefüllt", f"{w_data['total_filled']:.1f} kg", "für Hydrotest")
-            mc3.metric("Füllvolumen", f"{w_data['volume_l']:.0f} Liter", "Wasserbedarf")
-
-    c_geo1, c_geo2 = st.columns(2)
-    with c_geo1:
-        with st.container(border=True):
-            st.markdown("##### 📐 Flansch")
-            st.write(f"**Blatt:** {flange_b} mm | **Lochkreis:** {lk} mm")
-            st.write(f"**Bohrung:** {n_holes} x {bolt}")
-            progress_val = min(lk / (od + 100), 1.0)
-            st.progress(progress_val, text="Lochkreis Verhältnis")
-
-    with c_geo2:
-        with st.container(border=True):
-            st.markdown("##### 🔘 Dichtung (Check)")
-            d_innen = od - (2*wt_input) 
-            d_aussen = lk - (int(bolt.replace("M","")) * 1.5)
-            st.info(f"ID: ~{d_innen:.0f} mm | AD: ~{d_aussen:.0f} mm | 2.0mm")
-
-    st.divider()
-    
-    with st.container(border=True):
-        st.markdown("#### 🔧 Montage & Drehmomente (8.8)")
-        
-        cb_col1, cb_col2 = st.columns([1, 2.5])
-        
-        with cb_col1:
-            st.caption("Konfiguration")
-            conn_type = st.radio("Typ", ["Fest-Fest", "Fest-Los", "Fest-Blind"], index=0, label_visibility="collapsed")
-            use_washers = st.checkbox("2x U-Scheibe", value=True)
-            is_lubed = st.toggle("Geschmiert (MoS2)", value=True)
-            gasket_thk = st.number_input("Dichtung", value=2.0, step=0.5)
-            
-        with cb_col2:
-            bolt_info = HandbookCalculator.BOLT_DATA.get(bolt, [0, 0, 0])
-            sw, nm_dry, nm_lube = bolt_info
-            
-            t1 = flange_b
-            t2 = flange_b 
-            if "Los" in conn_type: t2 = flange_b + 5 
-            elif "Blind" in conn_type: t2 = flange_b + (dn * 0.02)
-                
-            n_washers = 2 if use_washers else 0
-            calc_len = HandbookCalculator.get_bolt_length(t1, t2, bolt, n_washers, gasket_thk)
-            torque = nm_lube if is_lubed else nm_dry
-            
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Bolzen", f"{bolt} x {calc_len}", f"{n_holes} Stk.")
-            m2.metric("Schlüsselweite", f"SW {sw} mm", "Nuss/Ring")
-            m3.metric("Drehmoment", f"{torque} Nm", "Geschmiert" if is_lubed else "Trocken")
-
-# -----------------------------------------------------------------------------
-# 5. ABSCHLUSS & ARCHIV (TÜV-READY)
-# -----------------------------------------------------------------------------
-
-def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
-    st.markdown('<div class="machine-header-doc">🏁 FERTIGSTELLUNG (HANDOVER)</div>', unsafe_allow_html=True)
-    
-    if is_archived:
-        st.warning(f"Projekt '{proj_name}' ist abgeschlossen und archiviert.")
-        if st.button("🔓 Projekt wiedereröffnen (Reopen)"):
-            DatabaseRepository.toggle_archive_project(active_pid, False)
-            st.session_state.project_archived = 0
-            st.rerun()
-            
-        df_log = DatabaseRepository.get_logbook_by_project(active_pid)
-        if not df_log.empty and PDF_AVAILABLE:
-            st.divider()
-            st.markdown("#### Dokumentation (Abruf)")
-            pdf_data = Exporter.to_pdf_final_report(df_log, proj_name, {"order_no": "Archiv", "system_name": "Archiv", "check_rt": True})
-            st.download_button("📄 Fertigungsbescheinigung herunterladen", pdf_data, f"Fertigungsbescheinigung_{proj_name}.pdf", "application/pdf", type="primary")
-        return
-
-    st.info("Erstellung der Fertigungsbescheinigung für die Abnahme.")
-    
-    df_log = DatabaseRepository.get_logbook_by_project(active_pid)
-    
-    with st.container(border=True):
-        st.markdown("#### 1. Projektdaten für Deckblatt")
-        c1, c2 = st.columns(2)
-        in_order = c1.text_input("Auftrags-Nr. / Ticket", placeholder="z.B. A-2024-55")
-        in_sys = c2.text_input("Anlagenteil / System", placeholder="z.B. Kältewasser VL")
-        
-        st.markdown("#### 2. Qualitätssicherung (Bestätigung)")
-        c_rt, c_dim, c_iso = st.columns(3)
-        check_rt = c_rt.checkbox("ZfP: RT (Röntgen) durchgeführt & i.O.", value=True)
-        check_dim = c_dim.checkbox("Maßhaltigkeit geprüft")
-        check_iso = c_iso.checkbox("Isometrie revidiert (As-Built)")
-
-    missing_apz = len(df_log[df_log['charge_apz'].astype(str).str.strip() == ''])
-    missing_weld = len(df_log[df_log['schweisser'].astype(str).str.strip() == ''])
-    
-    ready = True
-    if missing_apz > 0 or missing_weld > 0:
-        st.warning(f"Hinweis: Es fehlen {missing_apz} APZs und {missing_weld} Schweißer-Einträge.")
-        ready = False 
-
-    st.divider()
-    
-    col_act, col_pdf = st.columns(2)
-    
-    meta_data = {
-        "order_no": in_order,
-        "system_name": in_sys,
-        "check_rt": check_rt,
-        "check_dim": check_dim,
-        "check_iso": check_iso
-    }
-
-    with col_act:
-        force_close = False
-        if not ready:
-            force_close = st.checkbox("⚠️ Trotz fehlender Daten abschließen")
-        
-        if ready or force_close:
-            if st.button("🏁 BESCHEINIGUNG ERSTELLEN & ARCHIVIEREN", type="primary"):
-                DatabaseRepository.toggle_archive_project(active_pid, True)
-                st.session_state.project_archived = 1
-                st.balloons()
-                st.rerun()
-        else:
-            st.button("🏁 Abschließen", disabled=True)
-
-    with col_pdf:
-        if not df_log.empty and PDF_AVAILABLE:
-            pdf_data = Exporter.to_pdf_final_report(df_log, proj_name, meta_data)
-            st.download_button("📄 Vorschau: Fertigungsbescheinigung", pdf_data, f"Vorschau_Bescheinigung_{proj_name}.pdf", "application/pdf")
-
-# -----------------------------------------------------------------------------
-# 6. MAIN
-# -----------------------------------------------------------------------------
-
-def main():
-    init_app_state()
-    DatabaseRepository.init_db()
-    df_pipe = get_pipe_data()
-    calc = PipeCalculator(df_pipe)
-
-    render_sidebar_projects()
-
-    with st.sidebar:
-        st.subheader("⚙️ Setup")
-        dn = st.selectbox("Nennweite", df_pipe['DN'], index=8)
-        pn = st.radio("Druckstufe", ["PN 16", "PN 10"], horizontal=True)
-
-    tabs = ["🪚 Smarte Säge", "📐 Geometrie", "📝 Rohrbuch", "📦 Material", "📚 Smart Data", "🏁 Handover"]
-    
-    if st.session_state.active_tab not in tabs:
-        st.session_state.active_tab = tabs[0]
-    
-    selected_tab = st.radio("Menü", tabs, horizontal=True, label_visibility="collapsed", key="nav_radio", index=tabs.index(st.session_state.active_tab))
-    
-    if selected_tab != st.session_state.active_tab:
-        st.session_state.active_tab = selected_tab
-        st.rerun()
-
-    if st.session_state.active_tab == "🪚 Smarte Säge":
-        render_smart_saw(calc, df_pipe, dn, pn)
-    elif st.session_state.active_tab == "📐 Geometrie":
-        render_geometry_tools(calc, df_pipe)
-    elif st.session_state.active_tab == "📝 Rohrbuch":
-        render_logbook(df_pipe)
-    elif st.session_state.active_tab == "📦 Material":
-        render_mto_tab(st.session_state.active_project_id, st.session_state.active_project_name)
-    elif st.session_state.active_tab == "📚 Smart Data":
-        render_tab_handbook(calc, dn, pn)
-    elif st.session_state.active_tab == "🏁 Handover":
-        render_closeout_tab(st.session_state.active_project_id, st.session_state.active_project_name, st.session_state.project_archived)
-
-if __name__ == "__main__":
-    main()
+            h2.caption
