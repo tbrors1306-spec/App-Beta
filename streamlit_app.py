@@ -1,21 +1,37 @@
-# --- AUTO-INSTALLER START ---
+import streamlit as st
 import sys
 import subprocess
 import importlib.util
 
-def check_and_install(package_name):
-    spec = importlib.util.find_spec(package_name)
-    if spec is None:
-        print(f"🔧 Installiere fehlendes Paket: {package_name}...")
-        try:
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "streamlit-aggrid"])
-            print("✅ Installation erfolgreich! Bitte starte die App neu, falls die Tabelle nicht erscheint.")
-        except Exception as e:
-            print(f"❌ Installation fehlgeschlagen: {e}")
+# 1. Konfiguration muss IMMER als erstes kommen
+st.set_page_config(page_title="PipeCraft v2.0", page_icon="🏗️", layout="wide")
 
-# Prüfe auf das Tabellen-Paket
-check_and_install("st_aggrid")
-# --- AUTO-INSTALLER ENDE ---
+# 2. Der aggressive Auto-Installer mit Bildschirmausgabe
+def install_and_check():
+    package_name = "st_aggrid"
+    if importlib.util.find_spec(package_name) is None:
+        st.warning("⚠️ Das Tabellen-Modul fehlt. Installiere automatisch...")
+        try:
+            # Installation starten
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "streamlit-aggrid"])
+            st.success("✅ Installation erfolgreich! BITTE WARTEN...")
+            time.sleep(2)
+            st.rerun() # Versucht die App neu zu laden
+        except Exception as e:
+            st.error(f"❌ Installation fehlgeschlagen: {e}")
+            st.stop() # Stoppt die App hier
+    else:
+        # Wenn es da ist, prüfen wir den Import
+        try:
+            import st_aggrid
+            # st.toast("Tabellen-Modul geladen", icon="✅") # Optionales Feedback
+        except ImportError:
+            st.error("Modul ist installiert, aber Python findet es nicht. Bitte App komplett stoppen und neu starten.")
+
+# --- DIAGNOSE STARTEN ---
+import time # Time muss hier importiert werden für den Installer
+install_and_check()
+# ------------------------
 
 import time
 import logging
