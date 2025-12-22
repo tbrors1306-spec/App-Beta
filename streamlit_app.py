@@ -1,3 +1,22 @@
+# --- AUTO-INSTALLER START ---
+import sys
+import subprocess
+import importlib.util
+
+def check_and_install(package_name):
+    spec = importlib.util.find_spec(package_name)
+    if spec is None:
+        print(f"🔧 Installiere fehlendes Paket: {package_name}...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "streamlit-aggrid"])
+            print("✅ Installation erfolgreich! Bitte starte die App neu, falls die Tabelle nicht erscheint.")
+        except Exception as e:
+            print(f"❌ Installation fehlgeschlagen: {e}")
+
+# Prüfe auf das Tabellen-Paket
+check_and_install("st_aggrid")
+# --- AUTO-INSTALLER ENDE ---
+
 import time
 import logging
 import sqlite3
