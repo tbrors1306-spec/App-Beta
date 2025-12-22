@@ -33,10 +33,10 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_V2_4")
+logger = logging.getLogger("PipeCraft_V2_6")
 
 st.set_page_config(
-    page_title="PipeCraft v2.4",
+    page_title="PipeCraft v2.6",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -46,6 +46,13 @@ st.markdown("""
 <style>
     .main .block-container { padding-top: 2rem; padding-bottom: 3rem; background-color: #f8fafc; }
     h1, h2, h3, h4, h5 { font-family: 'Segoe UI', sans-serif; font-weight: 600; color: #1e293b; }
+    
+    /* Navigation Style */
+    div.row-widget.stRadio > div { flex-direction: row; align-items: stretch; }
+    div.row-widget.stRadio > div[role="radiogroup"] > label[data-baseweb="radio"] { 
+        background-color: #ffffff; border: 1px solid #e2e8f0; padding: 10px 20px; border-radius: 8px; margin-right: 10px;
+    }
+    
     .machine-header-saw { border-bottom: 4px solid #f97316; color: #f97316; padding: 5px 0; font-weight: 700; font-size: 1.2rem; margin-bottom: 15px; text-transform: uppercase; }
     .machine-header-geo { border-bottom: 4px solid #0ea5e9; color: #0ea5e9; padding: 5px 0; font-weight: 700; font-size: 1.2rem; margin-bottom: 15px; text-transform: uppercase; }
     .machine-header-doc { border-bottom: 4px solid #64748b; color: #64748b; padding: 5px 0; font-weight: 700; font-size: 1.2rem; margin-bottom: 15px; text-transform: uppercase; }
@@ -186,7 +193,6 @@ class DatabaseRepository:
     @staticmethod
     def bulk_update(ids: List[int], field: str, value: str):
         if not ids: return
-        # Sicherheits-Check: Nur erlaubte Felder
         allowed_map = {
             "Schweißer": "schweisser",
             "APZ / Charge": "charge_apz",
@@ -198,18 +204,18 @@ class DatabaseRepository:
 
         with sqlite3.connect(DB_NAME) as conn:
             placeholders = ', '.join('?' for _ in ids)
-            # Safe Parameter Binding für Value
             query = f"UPDATE rohrbuch SET {db_col} = ? WHERE id IN ({placeholders})"
-            # Args: (value, id1, id2, id3...)
             args = [value] + ids
             conn.cursor().execute(query, args)
             conn.commit()
 
     @staticmethod
     def get_known_values(column: str, project_id: int, limit: int = 50) -> List[str]:
+        # --- CHANGED: Now supports generic column lookup for Smart Inputs ---
         allowed = ['charge', 'charge_apz', 'schweisser', 'iso']
         if column not in allowed: return []
         with sqlite3.connect(DB_NAME) as conn:
+            # Holen der letzten Werte (sortiert nach ID absteigend)
             query = f'''SELECT {column} FROM rohrbuch WHERE project_id = ? AND {column} IS NOT NULL AND {column} != '' GROUP BY {column} ORDER BY MAX(id) DESC LIMIT ?'''
             rows = conn.cursor().execute(query, (project_id, limit)).fetchall()
             return [r[0] for r in rows]
@@ -656,21 +662,51 @@ def init_app_state():
         'saved_cuts': [],
         'next_cut_id': 1,
         'editing_id': None,
+        'bulk_edit_ids': [], # NEW: Multi-Select
         'last_iso': '',
         'last_naht': '',
         'last_apz': '',
         'last_schweisser': '',
         'last_datum': datetime.now(),
         'form_dn_red_idx': 0,
-        'logbook_view_index': 0 # 0=List, 1=Table
+        'logbook_view_index': 0,
+        'active_tab': "🪚 Smarte Säge" # Default Tab
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
 
+# --- NEW HELPER: Smart Input Widget ---
+def render_smart_input(label: str, db_column: str, current_value: str, key_prefix: str, active_pid: int) -> str:
+    known_values = DatabaseRepository.get_known_values(db_column, active_pid)
+    
+    # Logic: Show Selectbox if values exist, else Text Input
+    if known_values:
+        # Check if current_value is in known, else add it or handle "Manual"
+        options = ["✨ Neu / Manuell"] + known_values
+        
+        # Try to find index of current value
+        try: 
+            sel_idx = options.index(current_value)
+        except ValueError:
+            sel_idx = 0 # Default to "Neu" if value is not in history
+            
+        selection = st.selectbox(label, options, index=sel_idx, key=f"{key_prefix}_sel")
+        
+        if selection == "✨ Neu / Manuell":
+            # If "Neu" selected, show text input (pre-filled with current value if it was unknown)
+            final_val = st.text_input(f"{label} (Eingabe)", value=current_value, key=f"{key_prefix}_txt")
+        else:
+            final_val = selection
+    else:
+        # Fallback: Just Text Input
+        final_val = st.text_input(label, value=current_value, key=f"{key_prefix}_txt_only")
+        
+    return final_val
+
 def render_sidebar_projects():
     st.sidebar.title("🏗️ PipeCraft")
-    st.sidebar.caption("v2.4 (Bulk Ops)")
+    st.sidebar.caption("v2.6 (Stable Workflow)")
     
     projects = DatabaseRepository.get_projects() 
     
@@ -1063,18 +1099,23 @@ def render_logbook(df_pipe: pd.DataFrame):
         bulk_ids = st.session_state.get('bulk_edit_ids', [])
         
         if bulk_ids:
-            # --- BULK EDIT UI ---
+            # --- SMART BULK EDIT UI ---
             st.warning(f"⚡ MASSEN-BEARBEITUNG: {len(bulk_ids)} Einträge ausgewählt")
             with st.container(border=True):
                 c_bulk1, c_bulk2, c_bulk3 = st.columns([1, 2, 1])
                 target_field = c_bulk1.selectbox("Feld ändern:", ["Schweißer", "APZ / Charge", "ISO", "Datum"])
                 
                 new_value = ""
+                # Dynamische Smart Input Logik für Bulk Edit
                 if target_field == "Datum":
                     d_val = c_bulk2.date_input("Neues Datum", datetime.now())
                     new_value = d_val.strftime("%d.%m.%Y")
-                else:
-                    new_value = c_bulk2.text_input(f"Neuer Wert für {target_field}")
+                elif target_field == "Schweißer":
+                    new_value = render_smart_input("Neuer Schweißer", "schweisser", "", "bulk_sch", active_pid)
+                elif target_field == "APZ / Charge":
+                    new_value = render_smart_input("Neue APZ / Charge", "charge_apz", "", "bulk_apz", active_pid)
+                elif target_field == "ISO":
+                    new_value = render_smart_input("Neue ISO", "iso", "", "bulk_iso", active_pid)
                 
                 if c_bulk3.button("🚀 Alle ändern", type="primary"):
                     DatabaseRepository.bulk_update(bulk_ids, target_field, new_value)
@@ -1093,24 +1134,17 @@ def render_logbook(df_pipe: pd.DataFrame):
             with st.container(border=True):
                 st.markdown(f"#### {header_text}")
                 
+                # Defaults
                 def_iso = st.session_state.last_iso if not st.session_state.editing_id else ""
                 def_sch = st.session_state.last_schweisser if not st.session_state.editing_id else ""
                 def_apz = st.session_state.last_apz if not st.session_state.editing_id else ""
                 def_dat = st.session_state.last_datum if not st.session_state.editing_id else datetime.now()
 
                 c1, c2, c3 = st.columns(3)
-                iso_known = DatabaseRepository.get_known_values('iso', active_pid)
                 
-                if 'form_iso' not in st.session_state: st.session_state.form_iso = def_iso
-                
-                if iso_known and not st.session_state.editing_id: 
-                    iso_sel = c1.selectbox("ISO / Bez.", ["✨ Neu / Manuell"] + iso_known, key="sel_iso")
-                    if iso_sel == "✨ Neu / Manuell":
-                        iso_val = c1.text_input("ISO manuell", value=st.session_state.form_iso, key="inp_iso")
-                    else:
-                        iso_val = iso_sel
-                else:
-                    iso_val = c1.text_input("ISO / Bez.", value=st.session_state.form_iso, key="inp_iso_direct")
+                # ISO: Smart Input
+                current_iso = st.session_state.form_iso if st.session_state.editing_id else def_iso
+                iso_val = render_smart_input("ISO / Bez.", "iso", current_iso, "main_iso", active_pid)
 
                 if 'form_naht' not in st.session_state: st.session_state.form_naht = ""
                 naht_val = c2.text_input("Naht", value=st.session_state.form_naht, key="inp_naht")
@@ -1150,11 +1184,14 @@ def render_logbook(df_pipe: pd.DataFrame):
                 len_val = c6.number_input("Länge (mm)", value=float(st.session_state.form_len), step=1.0, key="inp_len") 
                 
                 c7, c8 = st.columns(2)
-                if 'form_apz' not in st.session_state: st.session_state.form_apz = def_apz
-                apz_val = c7.text_input("APZ / Zeugnis", value=st.session_state.form_apz, key="inp_apz")
                 
-                if 'form_schweisser' not in st.session_state: st.session_state.form_schweisser = def_sch
-                sch_val = c8.text_input("Schweißer", value=st.session_state.form_schweisser, key="inp_sch")
+                # APZ: Smart Input
+                current_apz = st.session_state.form_apz if st.session_state.editing_id else def_apz
+                apz_val = render_smart_input("APZ / Zeugnis", "charge_apz", current_apz, "main_apz", active_pid)
+                
+                # Schweißer: Smart Input
+                current_sch = st.session_state.form_schweisser if st.session_state.editing_id else def_sch
+                sch_val = render_smart_input("Schweißer", "schweisser", current_sch, "main_sch", active_pid)
                 
                 st.markdown("<br>", unsafe_allow_html=True)
                 
@@ -1226,12 +1263,18 @@ def render_logbook(df_pipe: pd.DataFrame):
             if AGGRID_AVAILABLE:
                 st.info("💡 Tipp: Mehrere Zeilen markieren für Massen-Änderung.")
                 
+                # SEARCH BAR
+                filter_text_grid = st.text_input("🔍 Tabelle durchsuchen", placeholder="Suchbegriff eingeben...", key="grid_search")
+
                 gb = GridOptionsBuilder.from_dataframe(df.drop(columns=['✏️', 'Löschen', 'project_id'], errors='ignore'))
                 gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=15)
                 # MULTIPLE SELECTION ACTIVATED
                 gb.configure_selection('multiple', use_checkbox=True)
                 gb.configure_default_column(editable=False, groupable=True)
                 
+                # Enable QuickFilter with text from input
+                gb.configure_grid_options(quickFilterText=filter_text_grid) 
+
                 js_code_apz = JsCode("""
                 function(params) {
                     if (params.value == null || params.value == "" || params.value == "OHNE NACHWEIS") {
@@ -1279,7 +1322,7 @@ def render_logbook(df_pipe: pd.DataFrame):
                     # Single Mode Trigger
                     st.session_state.bulk_edit_ids = [] # Clear bulk
                     
-                    # ... (Single Row Load Logic as before) ...
+                    # Single Row Load Logic
                     sel_row = None
                     if isinstance(selected, pd.DataFrame): sel_row = selected.iloc[0].to_dict()
                     else: 
@@ -1300,7 +1343,6 @@ def render_logbook(df_pipe: pd.DataFrame):
                             st.session_state.form_datum = datetime.strptime(d_str, "%d.%m.%Y").date()
                         except: st.session_state.form_datum = datetime.now().date()
                         
-                        # Parsing logic
                         dim_str = str(sel_row.get('dimension', ''))
                         all_dns = re.findall(r'\d+', dim_str)
                         if len(all_dns) > 0:
@@ -1547,14 +1589,34 @@ def main():
         dn = st.selectbox("Nennweite", df_pipe['DN'], index=8)
         pn = st.radio("Druckstufe", ["PN 16", "PN 10"], horizontal=True)
 
-    t1, t2, t3, t4, t5, t6 = st.tabs(["🪚 Smarte Säge", "📐 Geometrie", "📝 Rohrbuch", "📦 Material", "📚 Smart Data", "🏁 Handover"])
+    # --- CHANGED: NAVIGATION LOGIC (ANTI-JUMP) ---
+    tabs = ["🪚 Smarte Säge", "📐 Geometrie", "📝 Rohrbuch", "📦 Material", "📚 Smart Data", "🏁 Handover"]
     
-    with t1: render_smart_saw(calc, df_pipe, dn, pn)
-    with t2: render_geometry_tools(calc, df_pipe)
-    with t3: render_logbook(df_pipe)
-    with t4: render_mto_tab(st.session_state.active_project_id, st.session_state.active_project_name)
-    with t5: render_tab_handbook(calc, dn, pn)
-    with t6: render_closeout_tab(st.session_state.active_project_id, st.session_state.active_project_name, st.session_state.project_archived)
+    # Init default
+    if st.session_state.active_tab not in tabs:
+        st.session_state.active_tab = tabs[0]
+    
+    # Render Navigation
+    selected_tab = st.radio("Menü", tabs, horizontal=True, label_visibility="collapsed", key="nav_radio", index=tabs.index(st.session_state.active_tab))
+    
+    # Update State immediately if user clicks
+    if selected_tab != st.session_state.active_tab:
+        st.session_state.active_tab = selected_tab
+        st.rerun()
+
+    # Router
+    if st.session_state.active_tab == "🪚 Smarte Säge":
+        render_smart_saw(calc, df_pipe, dn, pn)
+    elif st.session_state.active_tab == "📐 Geometrie":
+        render_geometry_tools(calc, df_pipe)
+    elif st.session_state.active_tab == "📝 Rohrbuch":
+        render_logbook(df_pipe)
+    elif st.session_state.active_tab == "📦 Material":
+        render_mto_tab(st.session_state.active_project_id, st.session_state.active_project_name)
+    elif st.session_state.active_tab == "📚 Smart Data":
+        render_tab_handbook(calc, dn, pn)
+    elif st.session_state.active_tab == "🏁 Handover":
+        render_closeout_tab(st.session_state.active_project_id, st.session_state.active_project_name, st.session_state.project_archived)
 
 if __name__ == "__main__":
     main()
