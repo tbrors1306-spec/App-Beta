@@ -1299,15 +1299,20 @@ def render_logbook(df_pipe: pd.DataFrame):
         else:
             st.session_state.logbook_view_index = 0
 
-        # --- BRANCH A: AG-GRID (AUTOMATIC SELECTION) ---
+        # --- BRANCH A: AG-GRID (MANUAL MODE FOR BULK STABILITY) ---
         if view_mode_sel == "Tabelle (AgGrid)":
             if AGGRID_AVAILABLE:
-                st.info("💡 Tipp: Zeilen markieren für Massen-Änderung (Sofort-Modus).")
+                st.info("💡 **Tipp:** Wähle mehrere Zeilen aus und klicke dann auf den 'Update'-Knopf der Tabelle (oben rechts), um die Auswahl zu bestätigen.")
                 
+                # Import falls noch nicht geschehen
+                try: from st_aggrid import DataReturnMode
+                except: pass
+
                 filter_text_grid = st.text_input("🔍 Tabelle durchsuchen", placeholder="Suchbegriff eingeben...", key="grid_search")
                 
                 gb = GridOptionsBuilder.from_dataframe(df.drop(columns=['✏️', 'Löschen', 'project_id'], errors='ignore'))
                 gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=15)
+                # GroupSelectsChildren erlaubt das Auswählen ganzer Gruppen
                 gb.configure_selection('multiple', use_checkbox=True, groupSelectsChildren=True)
                 gb.configure_default_column(editable=False, groupable=True)
                 gb.configure_grid_options(quickFilterText=filter_text_grid) 
@@ -1324,11 +1329,14 @@ def render_logbook(df_pipe: pd.DataFrame):
                 
                 grid_options = gb.build()
                 
+                # --- WICHTIG: UPDATE MODE MANUAL ---
+                # Das verhindert den Refresh nach jedem Klick. Der Nutzer muss "Update" klicken.
                 grid_response = AgGrid(
                     df, 
                     gridOptions=grid_options,
                     allow_unsafe_jscode=True, 
-                    update_mode=GridUpdateMode.SELECTION_CHANGED, 
+                    update_mode=GridUpdateMode.MANUAL, 
+                    data_return_mode=DataReturnMode.AS_INPUT,
                     height=400,
                     theme="streamlit",
                     key="logbook_aggrid_main"
@@ -1412,9 +1420,15 @@ def render_logbook(df_pipe: pd.DataFrame):
                     c1, c2, c3, c4, c5 = st.columns([2, 1, 2, 0.5, 0.5])
                     c1.write(f"**{row['iso']}**")
                     c1.caption(f"Naht: {row['naht']}")
+                    
+                    # FIX: APZ ANZEIGE HINZUGEFÜGT
                     c2.write(f"{row['datum']}")
+                    apz_txt = row['charge_apz'] if row['charge_apz'] else "⚠️ APZ fehlt"
+                    c2.caption(f"APZ: {apz_txt}")
+                    
                     c3.write(f"{row['bauteil']}")
-                    c3.caption(f"{row['dimension']} | {row['schweisser']}")
+                    # FIX: SCHWEISSER ICON
+                    c3.caption(f"{row['dimension']} | 🧑‍🏭 {row['schweisser']}")
                     
                     if not is_archived:
                         if c4.button("✏️", key=f"edit_{row['id']}", help="Bearbeiten"):
@@ -1449,197 +1463,3 @@ def render_logbook(df_pipe: pd.DataFrame):
                             st.rerun()
     else:
         st.info(f"Keine Einträge für Projekt '{proj_name}'.")
-
-def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
-    st.markdown('<div class="machine-header-doc">📚 SMART DATA</div>', unsafe_allow_html=True)
-    row = calc.get_row(dn)
-    suffix = "_16" if pn == "PN 16" else "_10"
-    st.markdown(f"**DN {dn} / {pn}**")
-
-    od = float(row['D_Aussen'])
-    flange_b = float(row[f'Flansch_b{suffix}'])
-    lk = float(row[f'LK_k{suffix}'])
-    bolt = row[f'Schraube_M{suffix}']
-    n_holes = int(row[f'Lochzahl{suffix}'])
-    
-    with st.container(border=True):
-        st.markdown("##### 🏗️ Gewichte & Hydrotest")
-        c_in1, c_in2 = st.columns([1, 2])
-        with c_in1:
-            wt_input = st.number_input("Wandstärke (mm)", value=6.3, min_value=1.0, step=0.1)
-            len_input = st.number_input("Rohrlänge (m)", value=6.0, step=0.5)
-        with c_in2:
-            w_data = HandbookCalculator.calculate_weight(od, wt_input, len_input * 1000)
-            mc1, mc2, mc3 = st.columns(3)
-            mc1.metric("Leergewicht (Stahl)", f"{w_data['total_steel']:.1f} kg", f"{w_data['kg_per_m_steel']:.1f} kg/m")
-            mc2.metric("Gewicht Gefüllt", f"{w_data['total_filled']:.1f} kg", "für Hydrotest")
-            mc3.metric("Füllvolumen", f"{w_data['volume_l']:.0f} Liter", "Wasserbedarf")
-
-    c_geo1, c_geo2 = st.columns(2)
-    with c_geo1:
-        with st.container(border=True):
-            st.markdown("##### 📐 Flansch")
-            st.write(f"**Blatt:** {flange_b} mm | **Lochkreis:** {lk} mm")
-            st.write(f"**Bohrung:** {n_holes} x {bolt}")
-            progress_val = min(lk / (od + 100), 1.0)
-            st.progress(progress_val, text="Lochkreis Verhältnis")
-
-    with c_geo2:
-        with st.container(border=True):
-            st.markdown("##### 🔘 Dichtung (Check)")
-            d_innen = od - (2*wt_input) 
-            d_aussen = lk - (int(bolt.replace("M","")) * 1.5)
-            st.info(f"ID: ~{d_innen:.0f} mm | AD: ~{d_aussen:.0f} mm | 2.0mm")
-
-    st.divider()
-    
-    with st.container(border=True):
-        st.markdown("#### 🔧 Montage & Drehmomente (8.8)")
-        
-        cb_col1, cb_col2 = st.columns([1, 2.5])
-        
-        with cb_col1:
-            st.caption("Konfiguration")
-            conn_type = st.radio("Typ", ["Fest-Fest", "Fest-Los", "Fest-Blind"], index=0, label_visibility="collapsed")
-            use_washers = st.checkbox("2x U-Scheibe", value=True)
-            is_lubed = st.toggle("Geschmiert (MoS2)", value=True)
-            gasket_thk = st.number_input("Dichtung", value=2.0, step=0.5)
-            
-        with cb_col2:
-            bolt_info = HandbookCalculator.BOLT_DATA.get(bolt, [0, 0, 0])
-            sw, nm_dry, nm_lube = bolt_info
-            
-            t1 = flange_b
-            t2 = flange_b 
-            if "Los" in conn_type: t2 = flange_b + 5 
-            elif "Blind" in conn_type: t2 = flange_b + (dn * 0.02)
-                
-            n_washers = 2 if use_washers else 0
-            calc_len = HandbookCalculator.get_bolt_length(t1, t2, bolt, n_washers, gasket_thk)
-            torque = nm_lube if is_lubed else nm_dry
-            
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Bolzen", f"{bolt} x {calc_len}", f"{n_holes} Stk.")
-            m2.metric("Schlüsselweite", f"SW {sw} mm", "Nuss/Ring")
-            m3.metric("Drehmoment", f"{torque} Nm", "Geschmiert" if is_lubed else "Trocken")
-
-# -----------------------------------------------------------------------------
-# 5. ABSCHLUSS & ARCHIV (TÜV-READY)
-# -----------------------------------------------------------------------------
-
-def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
-    st.markdown('<div class="machine-header-doc">🏁 FERTIGSTELLUNG (HANDOVER)</div>', unsafe_allow_html=True)
-    
-    if is_archived:
-        st.warning(f"Projekt '{proj_name}' ist abgeschlossen und archiviert.")
-        if st.button("🔓 Projekt wiedereröffnen (Reopen)"):
-            DatabaseRepository.toggle_archive_project(active_pid, False)
-            st.session_state.project_archived = 0
-            st.rerun()
-            
-        df_log = DatabaseRepository.get_logbook_by_project(active_pid)
-        if not df_log.empty and PDF_AVAILABLE:
-            st.divider()
-            st.markdown("#### Dokumentation (Abruf)")
-            pdf_data = Exporter.to_pdf_final_report(df_log, proj_name, {"order_no": "Archiv", "system_name": "Archiv", "check_rt": True})
-            st.download_button("📄 Fertigungsbescheinigung herunterladen", pdf_data, f"Fertigungsbescheinigung_{proj_name}.pdf", "application/pdf", type="primary")
-        return
-
-    st.info("Erstellung der Fertigungsbescheinigung für die Abnahme.")
-    
-    df_log = DatabaseRepository.get_logbook_by_project(active_pid)
-    
-    with st.container(border=True):
-        st.markdown("#### 1. Projektdaten für Deckblatt")
-        c1, c2 = st.columns(2)
-        in_order = c1.text_input("Auftrags-Nr. / Ticket", placeholder="z.B. A-2024-55")
-        in_sys = c2.text_input("Anlagenteil / System", placeholder="z.B. Kältewasser VL")
-        
-        st.markdown("#### 2. Qualitätssicherung (Bestätigung)")
-        c_rt, c_dim, c_iso = st.columns(3)
-        check_rt = c_rt.checkbox("ZfP: RT (Röntgen) durchgeführt & i.O.", value=True)
-        check_dim = c_dim.checkbox("Maßhaltigkeit geprüft")
-        check_iso = c_iso.checkbox("Isometrie revidiert (As-Built)")
-
-    missing_apz = len(df_log[df_log['charge_apz'].astype(str).str.strip() == ''])
-    missing_weld = len(df_log[df_log['schweisser'].astype(str).str.strip() == ''])
-    
-    ready = True
-    if missing_apz > 0 or missing_weld > 0:
-        st.warning(f"Hinweis: Es fehlen {missing_apz} APZs und {missing_weld} Schweißer-Einträge.")
-        ready = False 
-
-    st.divider()
-    
-    col_act, col_pdf = st.columns(2)
-    
-    meta_data = {
-        "order_no": in_order,
-        "system_name": in_sys,
-        "check_rt": check_rt,
-        "check_dim": check_dim,
-        "check_iso": check_iso
-    }
-
-    with col_act:
-        force_close = False
-        if not ready:
-            force_close = st.checkbox("⚠️ Trotz fehlender Daten abschließen")
-        
-        if ready or force_close:
-            if st.button("🏁 BESCHEINIGUNG ERSTELLEN & ARCHIVIEREN", type="primary"):
-                DatabaseRepository.toggle_archive_project(active_pid, True)
-                st.session_state.project_archived = 1
-                st.balloons()
-                st.rerun()
-        else:
-            st.button("🏁 Abschließen", disabled=True)
-
-    with col_pdf:
-        if not df_log.empty and PDF_AVAILABLE:
-            pdf_data = Exporter.to_pdf_final_report(df_log, proj_name, meta_data)
-            st.download_button("📄 Vorschau: Fertigungsbescheinigung", pdf_data, f"Vorschau_Bescheinigung_{proj_name}.pdf", "application/pdf")
-
-# -----------------------------------------------------------------------------
-# 6. MAIN
-# -----------------------------------------------------------------------------
-
-def main():
-    init_app_state()
-    DatabaseRepository.init_db()
-    df_pipe = get_pipe_data()
-    calc = PipeCalculator(df_pipe)
-
-    render_sidebar_projects()
-
-    with st.sidebar:
-        st.subheader("⚙️ Setup")
-        dn = st.selectbox("Nennweite", df_pipe['DN'], index=8)
-        pn = st.radio("Druckstufe", ["PN 16", "PN 10"], horizontal=True)
-
-    tabs = ["🪚 Smarte Säge", "📐 Geometrie", "📝 Rohrbuch", "📦 Material", "📚 Smart Data", "🏁 Handover"]
-    
-    if st.session_state.active_tab not in tabs:
-        st.session_state.active_tab = tabs[0]
-    
-    selected_tab = st.radio("Menü", tabs, horizontal=True, label_visibility="collapsed", key="nav_radio", index=tabs.index(st.session_state.active_tab))
-    
-    if selected_tab != st.session_state.active_tab:
-        st.session_state.active_tab = selected_tab
-        st.rerun()
-
-    if st.session_state.active_tab == "🪚 Smarte Säge":
-        render_smart_saw(calc, df_pipe, dn, pn)
-    elif st.session_state.active_tab == "📐 Geometrie":
-        render_geometry_tools(calc, df_pipe)
-    elif st.session_state.active_tab == "📝 Rohrbuch":
-        render_logbook(df_pipe)
-    elif st.session_state.active_tab == "📦 Material":
-        render_mto_tab(st.session_state.active_project_id, st.session_state.active_project_name)
-    elif st.session_state.active_tab == "📚 Smart Data":
-        render_tab_handbook(calc, dn, pn)
-    elif st.session_state.active_tab == "🏁 Handover":
-        render_closeout_tab(st.session_state.active_project_id, st.session_state.active_project_name, st.session_state.project_archived)
-
-if __name__ == "__main__":
-    main()
