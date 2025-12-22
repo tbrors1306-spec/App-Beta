@@ -211,11 +211,9 @@ class DatabaseRepository:
 
     @staticmethod
     def get_known_values(column: str, project_id: int, limit: int = 50) -> List[str]:
-        # --- CHANGED: Now supports generic column lookup for Smart Inputs ---
         allowed = ['charge', 'charge_apz', 'schweisser', 'iso']
         if column not in allowed: return []
         with sqlite3.connect(DB_NAME) as conn:
-            # Holen der letzten Werte (sortiert nach ID absteigend)
             query = f'''SELECT {column} FROM rohrbuch WHERE project_id = ? AND {column} IS NOT NULL AND {column} != '' GROUP BY {column} ORDER BY MAX(id) DESC LIMIT ?'''
             rows = conn.cursor().execute(query, (project_id, limit)).fetchall()
             return [r[0] for r in rows]
@@ -462,7 +460,7 @@ class Visualizer:
         ax.arrow(0, 0, theta, 0.9, head_width=0.1, head_length=0.1, fc='#ef4444', ec='#ef4444', length_includes_head=True)
         ax.set_theta_zero_location("N") 
         ax.set_theta_direction(-1)      
-        ax.set_rticks([])               
+        ax.set_rticks([])                
         ax.set_rlim(0, 1)
         ax.grid(True, alpha=0.3)
         ax.set_title(f"Verdrehung: {rotation_angle:.1f}°", va='bottom', fontsize=10, fontweight='bold')
@@ -662,7 +660,7 @@ def init_app_state():
         'saved_cuts': [],
         'next_cut_id': 1,
         'editing_id': None,
-        'bulk_edit_ids': [], # NEW: Multi-Select
+        'bulk_edit_ids': [], 
         'last_iso': '',
         'last_naht': '',
         'last_apz': '',
@@ -676,30 +674,23 @@ def init_app_state():
         if k not in st.session_state:
             st.session_state[k] = v
 
-# --- NEW HELPER: Smart Input Widget ---
 def render_smart_input(label: str, db_column: str, current_value: str, key_prefix: str, active_pid: int) -> str:
     known_values = DatabaseRepository.get_known_values(db_column, active_pid)
     
-    # Logic: Show Selectbox if values exist, else Text Input
     if known_values:
-        # Check if current_value is in known, else add it or handle "Manual"
         options = ["✨ Neu / Manuell"] + known_values
-        
-        # Try to find index of current value
         try: 
             sel_idx = options.index(current_value)
         except ValueError:
-            sel_idx = 0 # Default to "Neu" if value is not in history
+            sel_idx = 0 
             
         selection = st.selectbox(label, options, index=sel_idx, key=f"{key_prefix}_sel")
         
         if selection == "✨ Neu / Manuell":
-            # If "Neu" selected, show text input (pre-filled with current value if it was unknown)
             final_val = st.text_input(f"{label} (Eingabe)", value=current_value, key=f"{key_prefix}_txt")
         else:
             final_val = selection
     else:
-        # Fallback: Just Text Input
         final_val = st.text_input(label, value=current_value, key=f"{key_prefix}_txt_only")
         
     return final_val
@@ -803,6 +794,7 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
 
     c_calc, c_list = st.columns([1.3, 1.7])
 
+    # --- LINKER BEREICH: RECHNER (Unverändert) ---
     with c_calc:
         with st.container(border=True):
             st.markdown("**1. Neuer Schnitt**")
@@ -865,41 +857,78 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                     st.success("Gespeichert!")
                     st.rerun()
 
+    # --- RECHTER BEREICH: LISTE (OPTIMIERT HYBRID) ---
     with c_list:
         st.markdown("#### 📋 Schnittliste")
+        
+        # 1. PLATZHALTER FÜR DIE BUTTONS (Damit sie OBEN erscheinen)
+        # Wir definieren den Container hier, füllen ihn aber erst NACHDEM wir wissen, was ausgewählt wurde.
+        action_bar = st.container()
+
         if not st.session_state.saved_cuts:
             st.info("Noch keine Schnitte vorhanden.")
+            # Leere Buttons rendern (Disabled)
+            with action_bar:
+                st.button("🗑️ Löschen", disabled=True, use_container_width=True)
         else:
+            # Daten vorbereiten
             data = [asdict(c) for c in st.session_state.saved_cuts]
             df_s = pd.DataFrame(data)
-            df_s['Auswahl'] = False
+            # Default "Auswahl" auf False setzen, falls noch nicht vorhanden
+            if 'Auswahl' not in df_s.columns:
+                df_s['Auswahl'] = False
+            
             df_display = df_s[['Auswahl', 'name', 'raw_length', 'cut_length', 'details', 'id']]
+            
+            # 2. TABELLE RENDERN
             edited_df = st.data_editor(
-                df_display, hide_index=True, use_container_width=True,
-                column_config={"Auswahl": st.column_config.CheckboxColumn("☑️", width="small"), "name": st.column_config.TextColumn("Bez.", width="medium"), "raw_length": st.column_config.NumberColumn("Roh", format="%.0f"), "cut_length": st.column_config.NumberColumn("Säge", format="%.1f", width="medium"), "details": st.column_config.TextColumn("Info", width="small"), "id": None},
-                disabled=["name", "raw_length", "cut_length", "details", "id"], key="saw_editor_v3"
+                df_display, 
+                hide_index=True, 
+                use_container_width=True,
+                column_config={
+                    "Auswahl": st.column_config.CheckboxColumn("☑️", width="small", default=False),
+                    "name": st.column_config.TextColumn("Bez.", width="medium"), 
+                    "raw_length": st.column_config.NumberColumn("Roh", format="%.0f"), 
+                    "cut_length": st.column_config.NumberColumn("Säge", format="%.1f", width="medium"), 
+                    "details": st.column_config.TextColumn("Info", width="small"), 
+                    "id": None
+                },
+                disabled=["name", "raw_length", "cut_length", "details", "id"], 
+                key="saw_editor_v4" # Neuer Key erzwingt Refresh der Config
             )
+            
+            # 3. AUSWAHL PRÜFEN
             selected_rows = edited_df[edited_df['Auswahl'] == True]
             selected_ids = selected_rows['id'].tolist()
-            if selected_ids:
-                st.info(f"{len(selected_ids)} Element(e) ausgewählt:")
-                col_del, col_trans = st.columns(2)
+            num_sel = len(selected_ids)
+            
+            # 4. BUTTONS IM OBEREN CONTAINER RENDERN
+            with action_bar:
+                # Buttons sind disabled, wenn num_sel == 0
+                btns_disabled = (num_sel == 0)
                 
-                if col_del.button(f"🗑️ Löschen", type="primary", use_container_width=True):
+                # Layout für die Action Bar
+                col_del, col_trans, col_excel = st.columns([1, 1, 1])
+                
+                # Löschen Button
+                if col_del.button(f"🗑️ Löschen ({num_sel})", disabled=btns_disabled, type="secondary", use_container_width=True):
                     st.session_state.saved_cuts = [c for c in st.session_state.saved_cuts if c.id not in selected_ids]
                     st.rerun()
                 
-                if col_trans.button(f"📝 Übertragen", help="Überträgt Rohr + Anbauteile", use_container_width=True):
+                # Übertragen Button
+                if col_trans.button(f"📝 Übertragen ({num_sel})", disabled=btns_disabled, type="primary", use_container_width=True, help="Überträgt Rohr + Anbauteile ins Rohrbuch"):
                     count_pipes = 0
                     count_fits = 0
                     for cut in st.session_state.saved_cuts:
                         if cut.id in selected_ids:
+                            # 1. Rohrstoß eintragen
                             DatabaseRepository.add_entry({
                                 "iso": cut.name, "naht": "", "datum": datetime.now().strftime("%d.%m.%Y"),
                                 "dimension": f"DN {current_dn}", "bauteil": "Rohrstoß", "laenge": cut.cut_length,
                                 "charge": "", "charge_apz": "", "schweisser": "", "project_id": active_pid
                             })
                             count_pipes += 1
+                            # 2. Fittings eintragen
                             for fit in cut.fittings:
                                 fit_name_clean = fit.name.split(" DN")[0]
                                 for _ in range(fit.count):
@@ -910,14 +939,18 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                                     })
                                     count_fits += 1
                     st.success(f"Übertragen: {count_pipes} Rohre und {count_fits} Fittings!")
-                    st.toast("Daten im Rohrbuch gespeichert.", icon="📦")
+                    st.toast(f"{count_pipes} Rohre + Fittings gespeichert.", icon="📦")
+                    # Optional: Auswahl aufheben nach Übertrag? 
+                    # Hier lassen wir es, damit man sieht, was man gemacht hat.
 
-            st.divider()
-            ce1, ce2 = st.columns(2)
-            fname_base = f"Saege_{proj_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}"
-            excel_data = Exporter.to_excel(df_s)
-            ce1.download_button("📥 Excel", excel_data, f"{fname_base}.xlsx", use_container_width=True)
-            if st.button("Alles Reset (Liste leeren)"):
+                # Excel Button (Immer aktiv, bezieht sich auf ALLE)
+                fname_base = f"Saege_{proj_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}"
+                excel_data = Exporter.to_excel(df_s)
+                col_excel.download_button("📥 Excel (Alle)", excel_data, f"{fname_base}.xlsx", use_container_width=True)
+
+            # Reset Button ganz unten als "Notausgang"
+            st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
+            if st.button("Alles Reset (Liste leeren)", type="secondary"):
                 st.session_state.saved_cuts = []
                 st.rerun()
 
@@ -1151,8 +1184,8 @@ def render_logbook(df_pipe: pd.DataFrame):
                 
                 if 'form_datum' not in st.session_state: st.session_state.form_datum = def_dat
                 if isinstance(st.session_state.form_datum, str):
-                     try: st.session_state.form_datum = datetime.strptime(st.session_state.form_datum, "%d.%m.%Y").date()
-                     except: st.session_state.form_datum = datetime.now().date()
+                      try: st.session_state.form_datum = datetime.strptime(st.session_state.form_datum, "%d.%m.%Y").date()
+                      except: st.session_state.form_datum = datetime.now().date()
                 
                 dat_val = c3.date_input("Datum", value=st.session_state.form_datum, key="inp_dat")
                 
@@ -1589,22 +1622,17 @@ def main():
         dn = st.selectbox("Nennweite", df_pipe['DN'], index=8)
         pn = st.radio("Druckstufe", ["PN 16", "PN 10"], horizontal=True)
 
-    # --- CHANGED: NAVIGATION LOGIC (ANTI-JUMP) ---
     tabs = ["🪚 Smarte Säge", "📐 Geometrie", "📝 Rohrbuch", "📦 Material", "📚 Smart Data", "🏁 Handover"]
     
-    # Init default
     if st.session_state.active_tab not in tabs:
         st.session_state.active_tab = tabs[0]
     
-    # Render Navigation
     selected_tab = st.radio("Menü", tabs, horizontal=True, label_visibility="collapsed", key="nav_radio", index=tabs.index(st.session_state.active_tab))
     
-    # Update State immediately if user clicks
     if selected_tab != st.session_state.active_tab:
         st.session_state.active_tab = selected_tab
         st.rerun()
 
-    # Router
     if st.session_state.active_tab == "🪚 Smarte Säge":
         render_smart_saw(calc, df_pipe, dn, pn)
     elif st.session_state.active_tab == "📐 Geometrie":
