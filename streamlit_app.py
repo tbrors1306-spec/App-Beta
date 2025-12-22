@@ -23,7 +23,7 @@ except ImportError:
     PDF_AVAILABLE = False
 
 try:
-    from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
+    from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode, DataReturnMode
     AGGRID_AVAILABLE = True
 except ImportError:
     AGGRID_AVAILABLE = False
@@ -493,6 +493,17 @@ class Visualizer:
 
 class Exporter:
     @staticmethod
+    def clean_text_for_pdf(text: str) -> str:
+        """Ersetzt problematische Zeichen für FPDF (latin-1)"""
+        if not isinstance(text, str): return str(text)
+        replacements = {
+            "€": "EUR", "–": "-", "—": "-", "„": '"', "“": '"', "”": '"', "’": "'", "‘": "'"
+        }
+        for k, v in replacements.items():
+            text = text.replace(k, v)
+        return text
+
+    @staticmethod
     def to_excel(df):
         output = BytesIO()
         export_df = df.drop(columns=['✏️', 'Löschen', 'id', 'Auswahl', 'project_id', 'dn_clean', 'charge'], errors='ignore')
@@ -511,7 +522,7 @@ class Exporter:
         pdf.add_page()
         # Header
         pdf.set_font("Arial", 'B', 16)
-        pdf.cell(0, 10, "FERTIGUNGSBESCHEINIGUNG", 0, 1, 'C')
+        pdf.cell(0, 10, Exporter.clean_text_for_pdf("FERTIGUNGSBESCHEINIGUNG"), 0, 1, 'C')
         pdf.set_font("Arial", 'I', 10)
         pdf.cell(0, 6, "Rohrleitungsbau / Anlagenbau", 0, 1, 'C')
         pdf.ln(10)
@@ -524,8 +535,8 @@ class Exporter:
         
         # Hilfsfunktion für Zeilen
         def row_cell(lbl, val):
-            pdf.cell(60, 8, lbl, 1)
-            pdf.cell(0, 8, str(val), 1, 1)
+            pdf.cell(60, 8, Exporter.clean_text_for_pdf(lbl), 1)
+            pdf.cell(0, 8, Exporter.clean_text_for_pdf(str(val)), 1, 1)
 
         row_cell("Projekt / Baustelle:", project_name)
         row_cell("Auftrags-Nr. / Ticket:", meta_data.get('order_no', '-'))
@@ -535,7 +546,7 @@ class Exporter:
 
         # Block 2: Qualitätssicherung
         pdf.set_font("Arial", 'B', 11)
-        pdf.cell(0, 8, "2. PRÜFERGEBNISSE & QUALITÄTSSICHERUNG", 1, 1, 'L', fill=True)
+        pdf.cell(0, 8, Exporter.clean_text_for_pdf("2. PRÜFERGEBNISSE & QUALITÄTSSICHERUNG"), 1, 1, 'L', fill=True)
         pdf.set_font("Arial", '', 10)
         
         rt_state = "JA / i.O." if meta_data.get('check_rt') else "Nicht gefordert"
@@ -550,7 +561,7 @@ class Exporter:
         
         # Block 3: Bestätigung
         pdf.set_font("Arial", '', 10)
-        pdf.multi_cell(0, 6, "Hiermit wird bestätigt, dass die oben genannten Rohrleitungen fachgerecht nach den geltenden Regeln der Technik und den vorliegenden Isometrien gefertigt wurden. Alle Schweißnähte wurden, soweit gefordert, einer Röntgenprüfung (RT) unterzogen und für in Ordnung befunden.")
+        pdf.multi_cell(0, 6, Exporter.clean_text_for_pdf("Hiermit wird bestätigt, dass die oben genannten Rohrleitungen fachgerecht nach den geltenden Regeln der Technik und den vorliegenden Isometrien gefertigt wurden. Alle Schweißnähte wurden, soweit gefordert, einer Röntgenprüfung (RT) unterzogen und für in Ordnung befunden."))
         pdf.ln(15)
 
         # Block 4: Unterschriften
@@ -588,7 +599,7 @@ class Exporter:
         for apz, group in groups:
             pdf.set_fill_color(240, 240, 240)
             pdf.set_font("Arial", 'B', 10)
-            pdf.cell(0, 8, f"Charge / APZ: {apz}", 1, 1, 'L', fill=True)
+            pdf.cell(0, 8, f"Charge / APZ: {Exporter.clean_text_for_pdf(apz)}", 1, 1, 'L', fill=True)
             pdf.set_font("Arial", size=9)
             agg = group.groupby(['dimension', 'bauteil']).size().reset_index(name='count')
             for _, row in agg.iterrows():
@@ -596,8 +607,8 @@ class Exporter:
                 isos = group[(group['dimension']==row['dimension']) & (group['bauteil']==row['bauteil'])]['iso'].unique()
                 iso_txt = ", ".join(isos[:3])
                 if len(isos) > 3: iso_txt += "..."
-                pdf.cell(90, 6, txt, 1)
-                pdf.cell(0, 6, f"Verbaut in: {iso_txt}", 1, 1)
+                pdf.cell(90, 6, Exporter.clean_text_for_pdf(txt), 1)
+                pdf.cell(0, 6, f"Verbaut in: {Exporter.clean_text_for_pdf(iso_txt)}", 1, 1)
             pdf.ln(2)
 
         # --- SEITE 3: Rohrbuch (Tabelle) ---
@@ -616,7 +627,7 @@ class Exporter:
         for _, row in df_log.iterrows():
             vals = [str(row.get(k.lower(), '')) if k.lower() != 'dn' else str(row.get('dimension','')) for k in cols]
             for i, v in enumerate(vals):
-                pdf.cell(widths[i], 7, v[:25].encode('latin-1','replace').decode('latin-1'), 1)
+                pdf.cell(widths[i], 7, Exporter.clean_text_for_pdf(v[:25]), 1)
             pdf.ln()
 
         return pdf.output(dest='S').encode('latin-1')
@@ -627,7 +638,7 @@ class Exporter:
         pdf = FPDF(orientation='L', unit='mm', format='A4')
         pdf.add_page()
         pdf.set_font("Arial", 'B', 16)
-        pdf.cell(0, 10, f"Saegeauftrag: {project_name}", 0, 1, 'L')
+        pdf.cell(0, 10, f"Saegeauftrag: {Exporter.clean_text_for_pdf(project_name)}", 0, 1, 'L')
         pdf.set_font("Arial", 'I', 10)
         pdf.cell(0, 5, f"Erstellt: {datetime.now().strftime('%d.%m.%Y %H:%M')}", 0, 1, 'L')
         pdf.ln(5)
@@ -642,7 +653,7 @@ class Exporter:
             for i, k in enumerate(keys):
                 val = str(row.get(k, ''))
                 if isinstance(row.get(k), float): val = f"{row.get(k):.1f}"
-                try: pdf.cell(widths[i], 8, val.encode('latin-1','replace').decode('latin-1'), 1)
+                try: pdf.cell(widths[i], 8, Exporter.clean_text_for_pdf(val), 1)
                 except: pdf.cell(widths[i], 8, "?", 1)
             pdf.ln()
         return pdf.output(dest='S').encode('latin-1')
@@ -794,7 +805,7 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
 
     c_calc, c_list = st.columns([1.3, 1.7])
 
-    # --- LINKER BEREICH: RECHNER (Unverändert) ---
+    # --- LINKER BEREICH: RECHNER ---
     with c_calc:
         with st.container(border=True):
             st.markdown("**1. Neuer Schnitt**")
@@ -862,19 +873,16 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
         st.markdown("#### 📋 Schnittliste")
         
         # 1. PLATZHALTER FÜR DIE BUTTONS (Damit sie OBEN erscheinen)
-        # Wir definieren den Container hier, füllen ihn aber erst NACHDEM wir wissen, was ausgewählt wurde.
         action_bar = st.container()
 
         if not st.session_state.saved_cuts:
             st.info("Noch keine Schnitte vorhanden.")
-            # Leere Buttons rendern (Disabled)
             with action_bar:
                 st.button("🗑️ Löschen", disabled=True, use_container_width=True)
         else:
             # Daten vorbereiten
             data = [asdict(c) for c in st.session_state.saved_cuts]
             df_s = pd.DataFrame(data)
-            # Default "Auswahl" auf False setzen, falls noch nicht vorhanden
             if 'Auswahl' not in df_s.columns:
                 df_s['Auswahl'] = False
             
@@ -894,7 +902,7 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                     "id": None
                 },
                 disabled=["name", "raw_length", "cut_length", "details", "id"], 
-                key="saw_editor_v4" # Neuer Key erzwingt Refresh der Config
+                key="saw_editor_v4"
             )
             
             # 3. AUSWAHL PRÜFEN
@@ -904,10 +912,7 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
             
             # 4. BUTTONS IM OBEREN CONTAINER RENDERN
             with action_bar:
-                # Buttons sind disabled, wenn num_sel == 0
                 btns_disabled = (num_sel == 0)
-                
-                # Layout für die Action Bar
                 col_del, col_trans, col_excel = st.columns([1, 1, 1])
                 
                 # Löschen Button
@@ -921,14 +926,12 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                     count_fits = 0
                     for cut in st.session_state.saved_cuts:
                         if cut.id in selected_ids:
-                            # 1. Rohrstoß eintragen
                             DatabaseRepository.add_entry({
                                 "iso": cut.name, "naht": "", "datum": datetime.now().strftime("%d.%m.%Y"),
                                 "dimension": f"DN {current_dn}", "bauteil": "Rohrstoß", "laenge": cut.cut_length,
                                 "charge": "", "charge_apz": "", "schweisser": "", "project_id": active_pid
                             })
                             count_pipes += 1
-                            # 2. Fittings eintragen
                             for fit in cut.fittings:
                                 fit_name_clean = fit.name.split(" DN")[0]
                                 for _ in range(fit.count):
@@ -940,15 +943,13 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                                     count_fits += 1
                     st.success(f"Übertragen: {count_pipes} Rohre und {count_fits} Fittings!")
                     st.toast(f"{count_pipes} Rohre + Fittings gespeichert.", icon="📦")
-                    # Optional: Auswahl aufheben nach Übertrag? 
-                    # Hier lassen wir es, damit man sieht, was man gemacht hat.
 
-                # Excel Button (Immer aktiv, bezieht sich auf ALLE)
+                # Excel Button
                 fname_base = f"Saege_{proj_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}"
                 excel_data = Exporter.to_excel(df_s)
                 col_excel.download_button("📥 Excel (Alle)", excel_data, f"{fname_base}.xlsx", use_container_width=True)
 
-            # Reset Button ganz unten als "Notausgang"
+            # Reset Button ganz unten
             st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
             if st.button("Alles Reset (Liste leeren)", type="secondary"):
                 st.session_state.saved_cuts = []
@@ -1126,20 +1127,20 @@ def render_logbook(df_pipe: pd.DataFrame):
 
     st.markdown(f"<div class='project-tag'>📍 PROJEKT: {proj_name} (ID: {active_pid})</div>", unsafe_allow_html=True)
 
-    # 1. Formular (Oben)
+    # 1. LOGIK: WAS WURDE AUSGEWÄHLT? (BULK vs. SINGLE)
+    bulk_ids = st.session_state.get('bulk_edit_ids', [])
+    
+    # FORMULAR-BEREICH
     if not is_archived:
-        # Check ob wir im Bulk-Modus sind (mehrere IDs im State)
-        bulk_ids = st.session_state.get('bulk_edit_ids', [])
-        
-        if bulk_ids:
-            # --- SMART BULK EDIT UI ---
+        if len(bulk_ids) > 1:
+            # --- A) BULK EDIT UI (Mehrere ausgewählt) ---
             st.warning(f"⚡ MASSEN-BEARBEITUNG: {len(bulk_ids)} Einträge ausgewählt")
             with st.container(border=True):
                 c_bulk1, c_bulk2, c_bulk3 = st.columns([1, 2, 1])
                 target_field = c_bulk1.selectbox("Feld ändern:", ["Schweißer", "APZ / Charge", "ISO", "Datum"])
                 
                 new_value = ""
-                # Dynamische Smart Input Logik für Bulk Edit
+                # Dynamische Smart Input Logik
                 if target_field == "Datum":
                     d_val = c_bulk2.date_input("Neues Datum", datetime.now())
                     new_value = d_val.strftime("%d.%m.%Y")
@@ -1153,7 +1154,7 @@ def render_logbook(df_pipe: pd.DataFrame):
                 if c_bulk3.button("🚀 Alle ändern", type="primary"):
                     DatabaseRepository.bulk_update(bulk_ids, target_field, new_value)
                     st.success(f"{len(bulk_ids)} Einträge aktualisiert!")
-                    st.session_state.bulk_edit_ids = [] # Reset
+                    st.session_state.bulk_edit_ids = [] # Reset nach Erfolg
                     st.rerun()
                 
                 if st.button("Abbrechen (Auswahl aufheben)"):
@@ -1161,7 +1162,11 @@ def render_logbook(df_pipe: pd.DataFrame):
                     st.rerun()
 
         else:
-            # --- NORMAL EDIT UI (Single) ---
+            # --- B) SINGLE EDIT UI (Einer oder keiner ausgewählt) ---
+            if len(bulk_ids) == 1:
+                if st.session_state.editing_id != bulk_ids[0]:
+                    st.session_state.editing_id = bulk_ids[0]
+            
             header_text = "Eintrag bearbeiten ✏️" if st.session_state.editing_id else "Neuer Eintrag ➕"
             
             with st.container(border=True):
@@ -1175,33 +1180,34 @@ def render_logbook(df_pipe: pd.DataFrame):
 
                 c1, c2, c3 = st.columns(3)
                 
-                # ISO: Smart Input
+                # ISO
                 current_iso = st.session_state.form_iso if st.session_state.editing_id else def_iso
                 iso_val = render_smart_input("ISO / Bez.", "iso", current_iso, "main_iso", active_pid)
 
+                # Naht
                 if 'form_naht' not in st.session_state: st.session_state.form_naht = ""
                 naht_val = c2.text_input("Naht", value=st.session_state.form_naht, key="inp_naht")
                 
+                # Datum
                 if 'form_datum' not in st.session_state: st.session_state.form_datum = def_dat
                 if isinstance(st.session_state.form_datum, str):
                       try: st.session_state.form_datum = datetime.strptime(st.session_state.form_datum, "%d.%m.%Y").date()
                       except: st.session_state.form_datum = datetime.now().date()
-                
                 dat_val = c3.date_input("Datum", value=st.session_state.form_datum, key="inp_dat")
                 
                 c4, c5, c6 = st.columns(3)
+                
+                # Bauteil
                 if 'form_bauteil_idx' not in st.session_state: st.session_state.form_bauteil_idx = 0
                 bt_idx = st.session_state.form_bauteil_idx
-                
                 bt_options = ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Reduzierung", "Stutzen", "Passstück", "Nippel", "Muffe"]
                 if bt_idx >= len(bt_options): bt_idx = 0
-                
                 bt_val = c4.selectbox("Bauteil", bt_options, index=bt_idx, key="inp_bt")
                 
+                # DN
                 if 'form_dn_idx' not in st.session_state: st.session_state.form_dn_idx = 8
                 dn_idx = st.session_state.form_dn_idx
                 if dn_idx >= len(df_pipe): dn_idx = 8
-                
                 dn_val = c5.selectbox("Dimension", df_pipe['DN'], index=dn_idx, key="inp_dn")
                 
                 if bt_val == "Reduzierung":
@@ -1213,21 +1219,22 @@ def render_logbook(df_pipe: pd.DataFrame):
                 else:
                     final_dim_str = f"DN {dn_val}"
 
+                # Länge
                 if 'form_len' not in st.session_state: st.session_state.form_len = 0.0
                 len_val = c6.number_input("Länge (mm)", value=float(st.session_state.form_len), step=1.0, key="inp_len") 
                 
                 c7, c8 = st.columns(2)
                 
-                # APZ: Smart Input
+                # APZ & Schweißer
                 current_apz = st.session_state.form_apz if st.session_state.editing_id else def_apz
                 apz_val = render_smart_input("APZ / Zeugnis", "charge_apz", current_apz, "main_apz", active_pid)
                 
-                # Schweißer: Smart Input
                 current_sch = st.session_state.form_schweisser if st.session_state.editing_id else def_sch
                 sch_val = render_smart_input("Schweißer", "schweisser", current_sch, "main_sch", active_pid)
                 
                 st.markdown("<br>", unsafe_allow_html=True)
                 
+                # BUTTONS
                 if st.session_state.editing_id:
                     col_save, col_cancel = st.columns([1, 1])
                     if col_save.button("🔄 ÄNDERUNG ÜBERNEHMEN", type="primary", use_container_width=True):
@@ -1237,8 +1244,8 @@ def render_logbook(df_pipe: pd.DataFrame):
                             "charge_apz": apz_val, "schweisser": sch_val
                         })
                         st.toast("Eintrag aktualisiert!", icon="✅")
-                        # Reset Edit Mode
                         st.session_state.editing_id = None
+                        st.session_state.bulk_edit_ids = [] # Clear selection
                         st.session_state.form_iso = ""
                         st.session_state.form_naht = ""
                         st.session_state.form_len = 0.0
@@ -1246,6 +1253,7 @@ def render_logbook(df_pipe: pd.DataFrame):
                         
                     if col_cancel.button("Abbrechen", use_container_width=True):
                         st.session_state.editing_id = None
+                        st.session_state.bulk_edit_ids = []
                         st.session_state.form_iso = "" 
                         st.rerun()
                 else:
@@ -1267,7 +1275,7 @@ def render_logbook(df_pipe: pd.DataFrame):
 
     st.divider()
     
-    # 3. Liste / Tabelle
+    # 2. TABELLE / LISTE
     df = DatabaseRepository.get_logbook_by_project(active_pid)
     
     if not df.empty:
@@ -1291,21 +1299,17 @@ def render_logbook(df_pipe: pd.DataFrame):
         else:
             st.session_state.logbook_view_index = 0
 
-        # --- BRANCH A: AG-GRID (BULK ENABLED) ---
+        # --- BRANCH A: AG-GRID (AUTOMATIC SELECTION) ---
         if view_mode_sel == "Tabelle (AgGrid)":
             if AGGRID_AVAILABLE:
-                st.info("💡 Tipp: Mehrere Zeilen markieren für Massen-Änderung.")
+                st.info("💡 Tipp: Zeilen markieren für Massen-Änderung (Sofort-Modus).")
                 
-                # SEARCH BAR
                 filter_text_grid = st.text_input("🔍 Tabelle durchsuchen", placeholder="Suchbegriff eingeben...", key="grid_search")
-
+                
                 gb = GridOptionsBuilder.from_dataframe(df.drop(columns=['✏️', 'Löschen', 'project_id'], errors='ignore'))
                 gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=15)
-                # MULTIPLE SELECTION ACTIVATED
-                gb.configure_selection('multiple', use_checkbox=True)
+                gb.configure_selection('multiple', use_checkbox=True, groupSelectsChildren=True)
                 gb.configure_default_column(editable=False, groupable=True)
-                
-                # Enable QuickFilter with text from input
                 gb.configure_grid_options(quickFilterText=filter_text_grid) 
 
                 js_code_apz = JsCode("""
@@ -1324,19 +1328,17 @@ def render_logbook(df_pipe: pd.DataFrame):
                     df, 
                     gridOptions=grid_options,
                     allow_unsafe_jscode=True, 
-                    update_mode=GridUpdateMode.SELECTION_CHANGED,
+                    update_mode=GridUpdateMode.SELECTION_CHANGED, 
                     height=400,
-                    theme="streamlit"
+                    theme="streamlit",
+                    key="logbook_aggrid_main"
                 )
                 
                 selected = grid_response['selected_rows']
-                
-                # --- BULK LOGIC ---
                 selected_ids_list = []
-                # Normalize Data
+                
                 if isinstance(selected, pd.DataFrame):
-                    if not selected.empty:
-                        selected_ids_list = selected['id'].tolist()
+                    if not selected.empty: selected_ids_list = selected['id'].tolist()
                 elif isinstance(selected, list):
                     for item in selected:
                         if isinstance(item, dict): selected_ids_list.append(item.get('id'))
@@ -1344,27 +1346,18 @@ def render_logbook(df_pipe: pd.DataFrame):
                             try: selected_ids_list.append(dict(item).get('id'))
                             except: pass
                 
-                # DECISION: Single or Bulk?
-                if len(selected_ids_list) > 1:
-                    # Bulk Mode Trigger
-                    if st.session_state.bulk_edit_ids != selected_ids_list:
-                        st.session_state.bulk_edit_ids = selected_ids_list
-                        st.session_state.editing_id = None # Clear single edit
-                        st.rerun()
-                elif len(selected_ids_list) == 1:
-                    # Single Mode Trigger
-                    st.session_state.bulk_edit_ids = [] # Clear bulk
+                current_bulk_set = set(st.session_state.bulk_edit_ids)
+                new_bulk_set = set(selected_ids_list)
+                
+                if current_bulk_set != new_bulk_set:
+                    st.session_state.bulk_edit_ids = selected_ids_list
                     
-                    # Single Row Load Logic
-                    sel_row = None
-                    if isinstance(selected, pd.DataFrame): sel_row = selected.iloc[0].to_dict()
-                    else: 
-                        if isinstance(selected[0], dict): sel_row = selected[0]
-                        else: sel_row = dict(selected[0])
-
-                    sel_id = sel_row.get('id')
-                    if sel_id and st.session_state.editing_id != sel_id:
-                        st.session_state.editing_id = int(sel_id)
+                    if len(selected_ids_list) == 1:
+                        sel_row = None
+                        if isinstance(selected, pd.DataFrame): sel_row = selected.iloc[0].to_dict()
+                        else: sel_row = dict(selected[0]) if isinstance(selected[0], dict) else dict(selected[0])
+                        
+                        st.session_state.editing_id = int(sel_row['id'])
                         st.session_state.form_iso = sel_row.get('iso', '')
                         st.session_state.form_naht = sel_row.get('naht', '')
                         st.session_state.form_apz = sel_row.get('charge_apz', '')
@@ -1376,32 +1369,32 @@ def render_logbook(df_pipe: pd.DataFrame):
                             st.session_state.form_datum = datetime.strptime(d_str, "%d.%m.%Y").date()
                         except: st.session_state.form_datum = datetime.now().date()
                         
+                        bt_options = ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Reduzierung", "Stutzen", "Passstück", "Nippel", "Muffe"]
+                        val_bt = sel_row.get('bauteil', 'Rohrstoß')
+                        try: st.session_state.form_bauteil_idx = bt_options.index(val_bt)
+                        except: st.session_state.form_bauteil_idx = 0
+                        
                         dim_str = str(sel_row.get('dimension', ''))
                         all_dns = re.findall(r'\d+', dim_str)
                         if len(all_dns) > 0:
                             dn_int = int(all_dns[0])
                             match = df_pipe[df_pipe['DN'] == dn_int]
                             if not match.empty: st.session_state.form_dn_idx = int(match.index[0])
+
+                    if len(selected_ids_list) != 1:
+                        st.session_state.editing_id = None
                         
-                        bt_options = ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Reduzierung", "Stutzen", "Passstück", "Nippel", "Muffe"]
-                        val_bt = sel_row.get('bauteil', 'Rohrstoß')
-                        try: st.session_state.form_bauteil_idx = bt_options.index(val_bt)
-                        except: st.session_state.form_bauteil_idx = 0
-                        
-                        st.rerun()
-                else:
-                    # Nothing selected
-                    st.session_state.bulk_edit_ids = []
-                
-                # Footer Buttons
-                if st.session_state.editing_id and not st.session_state.bulk_edit_ids:
-                    if st.button("🗑️ Ausgewählten Eintrag löschen", type="secondary"):
+                    st.rerun()
+
+                if st.session_state.editing_id and not len(selected_ids_list) > 1:
+                     if st.button("🗑️ Ausgewählten Eintrag löschen", type="secondary"):
                         DatabaseRepository.delete_entries([st.session_state.editing_id])
                         st.session_state.editing_id = None
+                        st.session_state.bulk_edit_ids = []
                         st.toast("Gelöscht!")
                         st.rerun()
 
-        # --- BRANCH B: LIST VIEW ---
+        # --- BRANCH B: LIST VIEW (MOBILE) ---
         else:
             filter_text = st.text_input("🔍 Suchen (ISO, Naht...)", placeholder="Filter...")
             if filter_text:
@@ -1426,6 +1419,8 @@ def render_logbook(df_pipe: pd.DataFrame):
                     if not is_archived:
                         if c4.button("✏️", key=f"edit_{row['id']}", help="Bearbeiten"):
                             st.session_state.editing_id = int(row['id'])
+                            st.session_state.bulk_edit_ids = [int(row['id'])]
+                            
                             st.session_state.form_iso = row['iso']
                             st.session_state.form_naht = row['naht']
                             st.session_state.form_apz = row['charge_apz'] if row['charge_apz'] else ""
