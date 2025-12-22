@@ -15,15 +15,13 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-# --- OPTIONAL IMPORTS (Graceful Degradation) ---
-# FPDF für PDF Export
+# --- OPTIONAL IMPORTS ---
 try:
     from fpdf import FPDF
     PDF_AVAILABLE = True
 except ImportError:
     PDF_AVAILABLE = False
 
-# AgGrid für Excel-Tabelle
 try:
     from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
     AGGRID_AVAILABLE = True
@@ -31,20 +29,19 @@ except ImportError:
     AGGRID_AVAILABLE = False
 
 # -----------------------------------------------------------------------------
-# 1. KONFIGURATION & CLEAN DESIGN SYSTEM (CSS)
+# 1. KONFIGURATION
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_V2_3")
+logger = logging.getLogger("PipeCraft_V2_4")
 
 st.set_page_config(
-    page_title="PipeCraft v2.3",
+    page_title="PipeCraft v2.4",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- CLEAN UI CSS V4.3 ---
 st.markdown("""
 <style>
     .main .block-container { padding-top: 2rem; padding-bottom: 3rem; background-color: #f8fafc; }
@@ -184,6 +181,28 @@ class DatabaseRepository:
         with sqlite3.connect(DB_NAME) as conn:
             placeholders = ', '.join('?' for _ in ids)
             conn.cursor().execute(f"DELETE FROM rohrbuch WHERE id IN ({placeholders})", ids)
+            conn.commit()
+
+    @staticmethod
+    def bulk_update(ids: List[int], field: str, value: str):
+        if not ids: return
+        # Sicherheits-Check: Nur erlaubte Felder
+        allowed_map = {
+            "Schweißer": "schweisser",
+            "APZ / Charge": "charge_apz",
+            "ISO": "iso",
+            "Datum": "datum"
+        }
+        db_col = allowed_map.get(field)
+        if not db_col: return
+
+        with sqlite3.connect(DB_NAME) as conn:
+            placeholders = ', '.join('?' for _ in ids)
+            # Safe Parameter Binding für Value
+            query = f"UPDATE rohrbuch SET {db_col} = ? WHERE id IN ({placeholders})"
+            # Args: (value, id1, id2, id3...)
+            args = [value] + ids
+            conn.cursor().execute(query, args)
             conn.commit()
 
     @staticmethod
@@ -628,7 +647,6 @@ class Exporter:
 # 4. UI SEITEN (TABS)
 # -----------------------------------------------------------------------------
 
-# --- CHANGED: Added view_index for hard state lock ---
 def init_app_state():
     defaults = {
         'active_project_id': None,
@@ -652,7 +670,7 @@ def init_app_state():
 
 def render_sidebar_projects():
     st.sidebar.title("🏗️ PipeCraft")
-    st.sidebar.caption("v2.3 (State Locked)")
+    st.sidebar.caption("v2.4 (Bulk Ops)")
     
     projects = DatabaseRepository.get_projects() 
     
@@ -1041,112 +1059,141 @@ def render_logbook(df_pipe: pd.DataFrame):
 
     # 1. Formular (Oben)
     if not is_archived:
-        header_text = "Eintrag bearbeiten ✏️" if st.session_state.editing_id else "Neuer Eintrag ➕"
+        # Check ob wir im Bulk-Modus sind (mehrere IDs im State)
+        bulk_ids = st.session_state.get('bulk_edit_ids', [])
         
-        with st.container(border=True):
-            st.markdown(f"#### {header_text}")
-            
-            def_iso = st.session_state.last_iso if not st.session_state.editing_id else ""
-            def_sch = st.session_state.last_schweisser if not st.session_state.editing_id else ""
-            def_apz = st.session_state.last_apz if not st.session_state.editing_id else ""
-            def_dat = st.session_state.last_datum if not st.session_state.editing_id else datetime.now()
-
-            c1, c2, c3 = st.columns(3)
-            iso_known = DatabaseRepository.get_known_values('iso', active_pid)
-            
-            if 'form_iso' not in st.session_state: st.session_state.form_iso = def_iso
-            
-            if iso_known and not st.session_state.editing_id: 
-                iso_sel = c1.selectbox("ISO / Bez.", ["✨ Neu / Manuell"] + iso_known, key="sel_iso")
-                if iso_sel == "✨ Neu / Manuell":
-                    iso_val = c1.text_input("ISO manuell", value=st.session_state.form_iso, key="inp_iso")
+        if bulk_ids:
+            # --- BULK EDIT UI ---
+            st.warning(f"⚡ MASSEN-BEARBEITUNG: {len(bulk_ids)} Einträge ausgewählt")
+            with st.container(border=True):
+                c_bulk1, c_bulk2, c_bulk3 = st.columns([1, 2, 1])
+                target_field = c_bulk1.selectbox("Feld ändern:", ["Schweißer", "APZ / Charge", "ISO", "Datum"])
+                
+                new_value = ""
+                if target_field == "Datum":
+                    d_val = c_bulk2.date_input("Neues Datum", datetime.now())
+                    new_value = d_val.strftime("%d.%m.%Y")
                 else:
-                    iso_val = iso_sel
-            else:
-                iso_val = c1.text_input("ISO / Bez.", value=st.session_state.form_iso, key="inp_iso_direct")
+                    new_value = c_bulk2.text_input(f"Neuer Wert für {target_field}")
+                
+                if c_bulk3.button("🚀 Alle ändern", type="primary"):
+                    DatabaseRepository.bulk_update(bulk_ids, target_field, new_value)
+                    st.success(f"{len(bulk_ids)} Einträge aktualisiert!")
+                    st.session_state.bulk_edit_ids = [] # Reset
+                    st.rerun()
+                
+                if st.button("Abbrechen (Auswahl aufheben)"):
+                    st.session_state.bulk_edit_ids = []
+                    st.rerun()
 
-            if 'form_naht' not in st.session_state: st.session_state.form_naht = ""
-            naht_val = c2.text_input("Naht", value=st.session_state.form_naht, key="inp_naht")
+        else:
+            # --- NORMAL EDIT UI (Single) ---
+            header_text = "Eintrag bearbeiten ✏️" if st.session_state.editing_id else "Neuer Eintrag ➕"
             
-            if 'form_datum' not in st.session_state: st.session_state.form_datum = def_dat
-            if isinstance(st.session_state.form_datum, str):
-                 try: st.session_state.form_datum = datetime.strptime(st.session_state.form_datum, "%d.%m.%Y").date()
-                 except: st.session_state.form_datum = datetime.now().date()
-            
-            dat_val = c3.date_input("Datum", value=st.session_state.form_datum, key="inp_dat")
-            
-            c4, c5, c6 = st.columns(3)
-            if 'form_bauteil_idx' not in st.session_state: st.session_state.form_bauteil_idx = 0
-            bt_idx = st.session_state.form_bauteil_idx
-            
-            bt_options = ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Reduzierung", "Stutzen", "Passstück", "Nippel", "Muffe"]
-            if bt_idx >= len(bt_options): bt_idx = 0
-            
-            bt_val = c4.selectbox("Bauteil", bt_options, index=bt_idx, key="inp_bt")
-            
-            if 'form_dn_idx' not in st.session_state: st.session_state.form_dn_idx = 8
-            dn_idx = st.session_state.form_dn_idx
-            if dn_idx >= len(df_pipe): dn_idx = 8
-            
-            dn_val = c5.selectbox("Dimension", df_pipe['DN'], index=dn_idx, key="inp_dn")
-            
-            if bt_val == "Reduzierung":
-                if 'form_dn_red_idx' not in st.session_state: st.session_state.form_dn_red_idx = 0
-                r_idx = st.session_state.form_dn_red_idx
-                if r_idx >= len(df_pipe): r_idx = 0
-                dn_red_val = c5.selectbox("Auf DN", df_pipe['DN'], index=r_idx, key="inp_dn_red")
-                final_dim_str = f"DN {dn_val} x DN {dn_red_val}"
-            else:
-                final_dim_str = f"DN {dn_val}"
+            with st.container(border=True):
+                st.markdown(f"#### {header_text}")
+                
+                def_iso = st.session_state.last_iso if not st.session_state.editing_id else ""
+                def_sch = st.session_state.last_schweisser if not st.session_state.editing_id else ""
+                def_apz = st.session_state.last_apz if not st.session_state.editing_id else ""
+                def_dat = st.session_state.last_datum if not st.session_state.editing_id else datetime.now()
 
-            if 'form_len' not in st.session_state: st.session_state.form_len = 0.0
-            len_val = c6.number_input("Länge (mm)", value=float(st.session_state.form_len), step=1.0, key="inp_len") 
-            
-            c7, c8 = st.columns(2)
-            if 'form_apz' not in st.session_state: st.session_state.form_apz = def_apz
-            apz_val = c7.text_input("APZ / Zeugnis", value=st.session_state.form_apz, key="inp_apz")
-            
-            if 'form_schweisser' not in st.session_state: st.session_state.form_schweisser = def_sch
-            sch_val = c8.text_input("Schweißer", value=st.session_state.form_schweisser, key="inp_sch")
-            
-            st.markdown("<br>", unsafe_allow_html=True)
-            
-            if st.session_state.editing_id:
-                col_save, col_cancel = st.columns([1, 1])
-                if col_save.button("🔄 ÄNDERUNG ÜBERNEHMEN", type="primary", use_container_width=True):
-                    DatabaseRepository.update_full_entry(st.session_state.editing_id, {
-                        "iso": iso_val, "naht": naht_val, "datum": dat_val.strftime("%d.%m.%Y"),
-                        "dimension": final_dim_str, "bauteil": bt_val, "laenge": len_val,
-                        "charge_apz": apz_val, "schweisser": sch_val
-                    })
-                    st.toast("Eintrag aktualisiert!", icon="✅")
-                    # Reset Edit Mode
-                    st.session_state.editing_id = None
-                    st.session_state.form_iso = ""
-                    st.session_state.form_naht = ""
-                    st.session_state.form_len = 0.0
-                    st.rerun()
-                    
-                if col_cancel.button("Abbrechen", use_container_width=True):
-                    st.session_state.editing_id = None
-                    st.session_state.form_iso = "" 
-                    st.rerun()
-            else:
-                if st.button("SPEICHERN 💾", type="primary", use_container_width=True):
-                    DatabaseRepository.add_entry({
-                        "iso": iso_val, "naht": naht_val, "datum": dat_val.strftime("%d.%m.%Y"),
-                        "dimension": final_dim_str, "bauteil": bt_val, "laenge": len_val,
-                        "charge": "", "charge_apz": apz_val, "schweisser": sch_val,
-                        "project_id": active_pid
-                    })
-                    st.session_state.last_iso = iso_val
-                    st.session_state.last_apz = apz_val
-                    st.session_state.last_schweisser = sch_val
-                    st.session_state.last_datum = dat_val
-                    st.session_state.form_naht = "" 
-                    st.session_state.form_len = 0.0
-                    st.success("Gespeichert")
-                    st.rerun()
+                c1, c2, c3 = st.columns(3)
+                iso_known = DatabaseRepository.get_known_values('iso', active_pid)
+                
+                if 'form_iso' not in st.session_state: st.session_state.form_iso = def_iso
+                
+                if iso_known and not st.session_state.editing_id: 
+                    iso_sel = c1.selectbox("ISO / Bez.", ["✨ Neu / Manuell"] + iso_known, key="sel_iso")
+                    if iso_sel == "✨ Neu / Manuell":
+                        iso_val = c1.text_input("ISO manuell", value=st.session_state.form_iso, key="inp_iso")
+                    else:
+                        iso_val = iso_sel
+                else:
+                    iso_val = c1.text_input("ISO / Bez.", value=st.session_state.form_iso, key="inp_iso_direct")
+
+                if 'form_naht' not in st.session_state: st.session_state.form_naht = ""
+                naht_val = c2.text_input("Naht", value=st.session_state.form_naht, key="inp_naht")
+                
+                if 'form_datum' not in st.session_state: st.session_state.form_datum = def_dat
+                if isinstance(st.session_state.form_datum, str):
+                     try: st.session_state.form_datum = datetime.strptime(st.session_state.form_datum, "%d.%m.%Y").date()
+                     except: st.session_state.form_datum = datetime.now().date()
+                
+                dat_val = c3.date_input("Datum", value=st.session_state.form_datum, key="inp_dat")
+                
+                c4, c5, c6 = st.columns(3)
+                if 'form_bauteil_idx' not in st.session_state: st.session_state.form_bauteil_idx = 0
+                bt_idx = st.session_state.form_bauteil_idx
+                
+                bt_options = ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Reduzierung", "Stutzen", "Passstück", "Nippel", "Muffe"]
+                if bt_idx >= len(bt_options): bt_idx = 0
+                
+                bt_val = c4.selectbox("Bauteil", bt_options, index=bt_idx, key="inp_bt")
+                
+                if 'form_dn_idx' not in st.session_state: st.session_state.form_dn_idx = 8
+                dn_idx = st.session_state.form_dn_idx
+                if dn_idx >= len(df_pipe): dn_idx = 8
+                
+                dn_val = c5.selectbox("Dimension", df_pipe['DN'], index=dn_idx, key="inp_dn")
+                
+                if bt_val == "Reduzierung":
+                    if 'form_dn_red_idx' not in st.session_state: st.session_state.form_dn_red_idx = 0
+                    r_idx = st.session_state.form_dn_red_idx
+                    if r_idx >= len(df_pipe): r_idx = 0
+                    dn_red_val = c5.selectbox("Auf DN", df_pipe['DN'], index=r_idx, key="inp_dn_red")
+                    final_dim_str = f"DN {dn_val} x DN {dn_red_val}"
+                else:
+                    final_dim_str = f"DN {dn_val}"
+
+                if 'form_len' not in st.session_state: st.session_state.form_len = 0.0
+                len_val = c6.number_input("Länge (mm)", value=float(st.session_state.form_len), step=1.0, key="inp_len") 
+                
+                c7, c8 = st.columns(2)
+                if 'form_apz' not in st.session_state: st.session_state.form_apz = def_apz
+                apz_val = c7.text_input("APZ / Zeugnis", value=st.session_state.form_apz, key="inp_apz")
+                
+                if 'form_schweisser' not in st.session_state: st.session_state.form_schweisser = def_sch
+                sch_val = c8.text_input("Schweißer", value=st.session_state.form_schweisser, key="inp_sch")
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                if st.session_state.editing_id:
+                    col_save, col_cancel = st.columns([1, 1])
+                    if col_save.button("🔄 ÄNDERUNG ÜBERNEHMEN", type="primary", use_container_width=True):
+                        DatabaseRepository.update_full_entry(st.session_state.editing_id, {
+                            "iso": iso_val, "naht": naht_val, "datum": dat_val.strftime("%d.%m.%Y"),
+                            "dimension": final_dim_str, "bauteil": bt_val, "laenge": len_val,
+                            "charge_apz": apz_val, "schweisser": sch_val
+                        })
+                        st.toast("Eintrag aktualisiert!", icon="✅")
+                        # Reset Edit Mode
+                        st.session_state.editing_id = None
+                        st.session_state.form_iso = ""
+                        st.session_state.form_naht = ""
+                        st.session_state.form_len = 0.0
+                        st.rerun()
+                        
+                    if col_cancel.button("Abbrechen", use_container_width=True):
+                        st.session_state.editing_id = None
+                        st.session_state.form_iso = "" 
+                        st.rerun()
+                else:
+                    if st.button("SPEICHERN 💾", type="primary", use_container_width=True):
+                        DatabaseRepository.add_entry({
+                            "iso": iso_val, "naht": naht_val, "datum": dat_val.strftime("%d.%m.%Y"),
+                            "dimension": final_dim_str, "bauteil": bt_val, "laenge": len_val,
+                            "charge": "", "charge_apz": apz_val, "schweisser": sch_val,
+                            "project_id": active_pid
+                        })
+                        st.session_state.last_iso = iso_val
+                        st.session_state.last_apz = apz_val
+                        st.session_state.last_schweisser = sch_val
+                        st.session_state.last_datum = dat_val
+                        st.session_state.form_naht = "" 
+                        st.session_state.form_len = 0.0
+                        st.success("Gespeichert")
+                        st.rerun()
 
     st.divider()
     
@@ -1158,34 +1205,31 @@ def render_logbook(df_pipe: pd.DataFrame):
         fname_base = f"Rohrbuch_{proj_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}"
         ce1.download_button("📥 Excel", Exporter.to_excel(df), f"{fname_base}.xlsx")
         
-        # --- VIEW TOGGLE WITH STATE LOCK ---
         st.markdown("### 📋 Einträge")
         
         view_options = ["Liste (Mobil)"]
         if AGGRID_AVAILABLE:
             view_options.append("Tabelle (AgGrid)")
             
-        # FIX: Wir setzen den Index manuell auf den gespeicherten Wert
-        # Falls der Index ungültig wäre, fangen wir das ab
         current_idx = st.session_state.logbook_view_index
         if current_idx >= len(view_options): current_idx = 0
         
         view_mode_sel = st.radio("Ansicht:", view_options, index=current_idx, horizontal=True, label_visibility="collapsed", key="view_toggle_widget")
         
-        # State Update Logic
         if view_mode_sel == "Tabelle (AgGrid)":
             st.session_state.logbook_view_index = 1
         else:
             st.session_state.logbook_view_index = 0
 
-        # --- BRANCH A: AG-GRID ---
+        # --- BRANCH A: AG-GRID (BULK ENABLED) ---
         if view_mode_sel == "Tabelle (AgGrid)":
             if AGGRID_AVAILABLE:
-                st.info("💡 Tipp: Klicke auf eine Zeile, um sie oben zu bearbeiten.")
+                st.info("💡 Tipp: Mehrere Zeilen markieren für Massen-Änderung.")
                 
                 gb = GridOptionsBuilder.from_dataframe(df.drop(columns=['✏️', 'Löschen', 'project_id'], errors='ignore'))
                 gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=15)
-                gb.configure_selection('single', use_checkbox=True)
+                # MULTIPLE SELECTION ACTIVATED
+                gb.configure_selection('multiple', use_checkbox=True)
                 gb.configure_default_column(editable=False, groupable=True)
                 
                 js_code_apz = JsCode("""
@@ -1210,19 +1254,38 @@ def render_logbook(df_pipe: pd.DataFrame):
                 )
                 
                 selected = grid_response['selected_rows']
-                sel_row = None
-
+                
+                # --- BULK LOGIC ---
+                selected_ids_list = []
+                # Normalize Data
                 if isinstance(selected, pd.DataFrame):
                     if not selected.empty:
-                        sel_row = selected.iloc[0].to_dict()
+                        selected_ids_list = selected['id'].tolist()
                 elif isinstance(selected, list):
-                    if len(selected) > 0:
+                    for item in selected:
+                        if isinstance(item, dict): selected_ids_list.append(item.get('id'))
+                        else: 
+                            try: selected_ids_list.append(dict(item).get('id'))
+                            except: pass
+                
+                # DECISION: Single or Bulk?
+                if len(selected_ids_list) > 1:
+                    # Bulk Mode Trigger
+                    if st.session_state.bulk_edit_ids != selected_ids_list:
+                        st.session_state.bulk_edit_ids = selected_ids_list
+                        st.session_state.editing_id = None # Clear single edit
+                        st.rerun()
+                elif len(selected_ids_list) == 1:
+                    # Single Mode Trigger
+                    st.session_state.bulk_edit_ids = [] # Clear bulk
+                    
+                    # ... (Single Row Load Logic as before) ...
+                    sel_row = None
+                    if isinstance(selected, pd.DataFrame): sel_row = selected.iloc[0].to_dict()
+                    else: 
                         if isinstance(selected[0], dict): sel_row = selected[0]
-                        else:
-                            try: sel_row = dict(selected[0])
-                            except: sel_row = None
+                        else: sel_row = dict(selected[0])
 
-                if sel_row:
                     sel_id = sel_row.get('id')
                     if sel_id and st.session_state.editing_id != sel_id:
                         st.session_state.editing_id = int(sel_id)
@@ -1230,32 +1293,20 @@ def render_logbook(df_pipe: pd.DataFrame):
                         st.session_state.form_naht = sel_row.get('naht', '')
                         st.session_state.form_apz = sel_row.get('charge_apz', '')
                         st.session_state.form_schweisser = sel_row.get('schweisser', '')
-                        
                         l_val = sel_row.get('laenge', 0.0)
                         st.session_state.form_len = float(l_val) if l_val else 0.0
-                        
                         try: 
                             d_str = sel_row.get('datum', datetime.now().strftime("%d.%m.%Y"))
                             st.session_state.form_datum = datetime.strptime(d_str, "%d.%m.%Y").date()
                         except: st.session_state.form_datum = datetime.now().date()
                         
+                        # Parsing logic
                         dim_str = str(sel_row.get('dimension', ''))
                         all_dns = re.findall(r'\d+', dim_str)
                         if len(all_dns) > 0:
                             dn_int = int(all_dns[0])
                             match = df_pipe[df_pipe['DN'] == dn_int]
-                            if not match.empty:
-                                st.session_state.form_dn_idx = int(match.index[0])
-                            else:
-                                st.session_state.form_dn_idx = 8
-                        
-                        if len(all_dns) > 1:
-                            dn_red_int = int(all_dns[1])
-                            match_r = df_pipe[df_pipe['DN'] == dn_red_int]
-                            if not match_r.empty:
-                                st.session_state.form_dn_red_idx = int(match_r.index[0])
-                            else:
-                                st.session_state.form_dn_red_idx = 0
+                            if not match.empty: st.session_state.form_dn_idx = int(match.index[0])
                         
                         bt_options = ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Reduzierung", "Stutzen", "Passstück", "Nippel", "Muffe"]
                         val_bt = sel_row.get('bauteil', 'Rohrstoß')
@@ -1263,15 +1314,19 @@ def render_logbook(df_pipe: pd.DataFrame):
                         except: st.session_state.form_bauteil_idx = 0
                         
                         st.rerun()
+                else:
+                    # Nothing selected
+                    st.session_state.bulk_edit_ids = []
                 
-                if st.session_state.editing_id:
+                # Footer Buttons
+                if st.session_state.editing_id and not st.session_state.bulk_edit_ids:
                     if st.button("🗑️ Ausgewählten Eintrag löschen", type="secondary"):
                         DatabaseRepository.delete_entries([st.session_state.editing_id])
                         st.session_state.editing_id = None
                         st.toast("Gelöscht!")
                         st.rerun()
 
-        # --- BRANCH B: LIST VIEW (Mobile) ---
+        # --- BRANCH B: LIST VIEW ---
         else:
             filter_text = st.text_input("🔍 Suchen (ISO, Naht...)", placeholder="Filter...")
             if filter_text:
@@ -1287,7 +1342,6 @@ def render_logbook(df_pipe: pd.DataFrame):
             for index, row in filtered_df.head(50).iterrows():
                 with st.container(border=True):
                     c1, c2, c3, c4, c5 = st.columns([2, 1, 2, 0.5, 0.5])
-                    
                     c1.write(f"**{row['iso']}**")
                     c1.caption(f"Naht: {row['naht']}")
                     c2.write(f"{row['datum']}")
@@ -1313,11 +1367,7 @@ def render_logbook(df_pipe: pd.DataFrame):
                                 dn_int = int(all_dns[0])
                                 try: st.session_state.form_dn_idx = int(df_pipe[df_pipe['DN'] == dn_int].index[0])
                                 except: st.session_state.form_dn_idx = 8
-                            if len(all_dns) > 1:
-                                dn_red_int = int(all_dns[1])
-                                try: st.session_state.form_dn_red_idx = int(df_pipe[df_pipe['DN'] == dn_red_int].index[0])
-                                except: st.session_state.form_dn_red_idx = 0
-
+                            
                             bt_options = ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Reduzierung", "Stutzen", "Passstück", "Nippel", "Muffe"]
                             try: st.session_state.form_bauteil_idx = bt_options.index(row['bauteil'])
                             except: st.session_state.form_bauteil_idx = 0
