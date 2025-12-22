@@ -35,16 +35,16 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_V2_1")
+logger = logging.getLogger("PipeCraft_V2_2")
 
 st.set_page_config(
-    page_title="PipeCraft v2.1",
+    page_title="PipeCraft v2.2",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- CLEAN UI CSS V4.1 ---
+# --- CLEAN UI CSS V4.2 ---
 st.markdown("""
 <style>
     .main .block-container { padding-top: 2rem; padding-bottom: 3rem; background-color: #f8fafc; }
@@ -599,6 +599,37 @@ class Exporter:
         return pdf.output(dest='S').encode('latin-1')
 
     @staticmethod
+    def to_pdf_logbook(df, project_name="Unbekannt"):
+        if not PDF_AVAILABLE: return b""
+        pdf = FPDF(orientation='L', unit='mm', format='A4')
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 16)
+        pdf.cell(0, 10, f"Rohrbuch: {project_name}", 0, 1, 'L')
+        pdf.set_font("Arial", 'I', 10)
+        pdf.cell(0, 5, f"Stand: {datetime.now().strftime('%d.%m.%Y %H:%M')}", 0, 1, 'L')
+        pdf.ln(5)
+        cols = ["ISO", "Naht", "Datum", "DN", "Bauteil", "APZ", "Schweißer"]
+        widths = [35, 25, 25, 25, 50, 45, 35]
+        pdf.set_font("Arial", 'B', 8)
+        for i, c in enumerate(cols): pdf.cell(widths[i], 8, c, 1)
+        pdf.ln()
+        pdf.set_font("Arial", size=8)
+        export_df = df.drop(columns=['✏️', 'Löschen', 'id', 'project_id'], errors='ignore')
+        for _, row in export_df.iterrows():
+            def g(k): 
+                if k.lower() in row: return str(row[k.lower()])
+                if k=="APZ" and 'charge_apz' in row: return str(row['charge_apz'])
+                if k=="ISO" and 'iso' in row: return str(row['iso'])
+                if k=="DN" and 'dimension' in row: return str(row['dimension'])
+                return ""
+            vals = [g(c) for c in cols]
+            for i, v in enumerate(vals):
+                try: pdf.cell(widths[i], 8, v[:20].encode('latin-1','replace').decode('latin-1'), 1)
+                except: pdf.cell(widths[i], 8, "?", 1)
+            pdf.ln()
+        return pdf.output(dest='S').encode('latin-1')
+
+    @staticmethod
     def to_pdf_sawlist(df, project_name="Unbekannt"):
         if not PDF_AVAILABLE: return b""
         pdf = FPDF(orientation='L', unit='mm', format='A4')
@@ -650,7 +681,7 @@ def init_app_state():
 
 def render_sidebar_projects():
     st.sidebar.title("🏗️ PipeCraft")
-    st.sidebar.caption("v2.1 (Stable Fix)")
+    st.sidebar.caption("v2.2 (Stable View)")
     
     projects = DatabaseRepository.get_projects() 
     
@@ -1158,27 +1189,25 @@ def render_logbook(df_pipe: pd.DataFrame):
         fname_base = f"Rohrbuch_{proj_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}"
         ce1.download_button("📥 Excel", Exporter.to_excel(df), f"{fname_base}.xlsx")
         
-        # --- VIEW TOGGLE ---
+        # --- VIEW TOGGLE (FIX: key added) ---
         st.markdown("### 📋 Einträge")
         
         view_options = ["Liste (Mobil)"]
         if AGGRID_AVAILABLE:
             view_options.append("Tabelle (AgGrid)")
             
-        view_mode = st.radio("Ansicht:", view_options, horizontal=True, label_visibility="collapsed")
+        view_mode = st.radio("Ansicht:", view_options, horizontal=True, label_visibility="collapsed", key="logbook_view_mode")
 
         # --- BRANCH A: AG-GRID ---
         if view_mode == "Tabelle (AgGrid)":
             if AGGRID_AVAILABLE:
                 st.info("💡 Tipp: Klicke auf eine Zeile, um sie oben zu bearbeiten.")
                 
-                # Configure Grid
                 gb = GridOptionsBuilder.from_dataframe(df.drop(columns=['✏️', 'Löschen', 'project_id'], errors='ignore'))
                 gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=15)
                 gb.configure_selection('single', use_checkbox=True)
                 gb.configure_default_column(editable=False, groupable=True)
                 
-                # Conditional Formatting (Rot bei fehlender APZ)
                 js_code_apz = JsCode("""
                 function(params) {
                     if (params.value == null || params.value == "" || params.value == "OHNE NACHWEIS") {
@@ -1200,20 +1229,16 @@ def render_logbook(df_pipe: pd.DataFrame):
                     theme="streamlit"
                 )
                 
-                # --- FIXED: Robust Selection Logic ---
                 selected = grid_response['selected_rows']
                 sel_row = None
 
-                # Handle DataFrame return (New AgGrid versions)
+                # Robuste Extraktion der Zeile
                 if isinstance(selected, pd.DataFrame):
                     if not selected.empty:
                         sel_row = selected.iloc[0].to_dict()
-                
-                # Handle List return (Old AgGrid versions)
                 elif isinstance(selected, list):
                     if len(selected) > 0:
-                        if isinstance(selected[0], dict):
-                            sel_row = selected[0]
+                        if isinstance(selected[0], dict): sel_row = selected[0]
                         else:
                             try: sel_row = dict(selected[0])
                             except: sel_row = None
@@ -1260,7 +1285,6 @@ def render_logbook(df_pipe: pd.DataFrame):
                         
                         st.rerun()
                 
-                # Delete Button
                 if st.session_state.editing_id:
                     if st.button("🗑️ Ausgewählten Eintrag löschen", type="secondary"):
                         DatabaseRepository.delete_entries([st.session_state.editing_id])
@@ -1284,7 +1308,6 @@ def render_logbook(df_pipe: pd.DataFrame):
             for index, row in filtered_df.head(50).iterrows():
                 with st.container(border=True):
                     c1, c2, c3, c4, c5 = st.columns([2, 1, 2, 0.5, 0.5])
-                    
                     c1.write(f"**{row['iso']}**")
                     c1.caption(f"Naht: {row['naht']}")
                     c2.write(f"{row['datum']}")
