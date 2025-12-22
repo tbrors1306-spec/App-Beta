@@ -28,7 +28,6 @@ except (ImportError, ModuleNotFoundError):
     PDF_AVAILABLE = False
 
 # AgGrid: Globaler Import oder None. 
-# Wir definieren die Namen vorab als None, um NameErrors zu verhindern.
 AgGrid = None
 GridOptionsBuilder = None
 GridUpdateMode = None
@@ -41,7 +40,6 @@ try:
 except (ImportError, ModuleNotFoundError):
     AGGRID_AVAILABLE = False
 except Exception as e:
-    # Logging ist hier wichtig, damit wir wissen, WARUM es fehlte (z.B. Version mismatch)
     logging.warning(f"AgGrid Import fehlgeschlagen: {e}")
     AGGRID_AVAILABLE = False
 
@@ -50,10 +48,10 @@ except Exception as e:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_V2_7_Stable")
+logger = logging.getLogger("PipeCraft_V2_8_UX")
 
 st.set_page_config(
-    page_title="PipeCraft v2.7 (Hardened)",
+    page_title="PipeCraft v2.8 (UX Upgrade)",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -295,15 +293,12 @@ class SavedCut:
     fittings: List[FittingItem] = field(default_factory=list)
 
 class PipeCalculator:
-    # -----------------------------------------------------------------
-    # LEGACY: Robustes PN-Mapping statt Hardcoding
-    # -----------------------------------------------------------------
     PN_MAP = {
         "PN 16": "_16",
         "PN 10": "_10",
-        "PN 6": "_10", # Fallback example
-        "PN 25": "_16", # Fallback example
-        "PN 40": "_16"  # Fallback example
+        "PN 6": "_10",
+        "PN 25": "_16", 
+        "PN 40": "_16" 
     }
 
     def __init__(self, df: pd.DataFrame): self.df = df
@@ -314,8 +309,6 @@ class PipeCalculator:
         
     def get_deduction(self, f_type: str, dn: int, pn: str, angle: float = 90.0) -> float:
         row = self.get_row(dn)
-        
-        # Verwende das Mapping, Default zu "_10" wenn unbekannt
         suffix = self.PN_MAP.get(pn, "_10")
         
         if "Bogen 90°" in f_type: return float(row['Radius_BA3'])
@@ -437,9 +430,6 @@ class Visualizer:
         row_s = df_pipe[df_pipe['DN'] == dn_stutzen].iloc[0]
         r_main = row_h['D_Aussen'] / 2; r_stub = row_s['D_Aussen'] / 2
         
-        # -----------------------------------------------------------------
-        # FIX: Sichere Rückgabe eines leeren Plots bei Fehler
-        # -----------------------------------------------------------------
         if r_stub > r_main:
             fig, ax = plt.subplots(figsize=(6, 2))
             ax.text(0.5, 0.5, "FEHLER: Stutzen > Hauptrohr", ha='center', va='center', color='red', fontsize=12, fontweight='bold')
@@ -496,15 +486,10 @@ class Visualizer:
         ax.set_xlabel('Seite (Roll)')
         ax.set_ylabel('Länge (Run)')
         ax.set_zlabel('Höhe (Set)')
-        
-        # -----------------------------------------------------------------
-        # FIX: Matplotlib Crash Prevention bei 0-Werten
-        # -----------------------------------------------------------------
         try: 
             ax.set_box_aspect([roll if roll>10 else 100, run if run>10 else 100, set_val if set_val>10 else 100])
         except: 
-            pass # Fallback auf Standard-Aspect, wenn Berechnung fehlschlägt
-            
+            pass 
         ax.legend(loc='upper left', fontsize='small')
         plt.close(fig)
         return fig
@@ -724,7 +709,7 @@ def init_app_state():
         'project_archived': 0,
         'fitting_list': [],
         'saved_cuts': [],
-        'next_cut_id': 1,
+        # Phase 2: 'next_cut_id' entfernt, da wir jetzt Time-based IDs nutzen
         'editing_id': None,
         'bulk_edit_ids': [], 
         'last_iso': '',
@@ -763,7 +748,7 @@ def render_smart_input(label: str, db_column: str, current_value: str, key_prefi
 
 def render_sidebar_projects():
     st.sidebar.title("🏗️ PipeCraft")
-    st.sidebar.caption("v2.7 (Hardened)")
+    st.sidebar.caption("v2.8 (UX Upgrade)")
     
     projects = DatabaseRepository.get_projects() 
     
@@ -913,14 +898,21 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
             st.caption(f"Abzüge: Teile -{sum_fit:.1f} | Spalte -{sum_gap:.1f} | Dicht. -{sum_gskt:.1f}")
             if st.button("💾 SPEICHERN", type="primary", use_container_width=True):
                 if raw_len > 0:
-                    final_name = cut_name if cut_name.strip() else f"Schnitt #{st.session_state.next_cut_id}"
+                    # FIX (Phase 2): ID Generation via Timestamp für absolute Uniqueness
+                    final_name = cut_name if cut_name.strip() else f"Schnitt"
                     current_fittings_copy = list(st.session_state.fitting_list)
-                    new_cut = SavedCut(st.session_state.next_cut_id, final_name, raw_len, final, f"{len(current_fittings_copy)} Teile", datetime.now().strftime("%H:%M"), current_fittings_copy)
+                    
+                    # ID ist jetzt Zeitstempel (int), Kollisionssicher
+                    new_id = int(time.time() * 1000) 
+                    
+                    new_cut = SavedCut(new_id, final_name, raw_len, final, f"{len(current_fittings_copy)} Teile", datetime.now().strftime("%H:%M"), current_fittings_copy)
                     
                     st.session_state.saved_cuts.append(new_cut)
-                    st.session_state.next_cut_id += 1
                     st.session_state.fitting_list = [] 
-                    st.success("Gespeichert!")
+                    
+                    # FIX (Phase 2): Toast statt Banner
+                    st.toast("✅ Schnitt gespeichert!", icon="💾")
+                    time.sleep(0.5)
                     st.rerun()
 
     # --- RECHTER BEREICH: LISTE (OPTIMIERT HYBRID) ---
@@ -928,25 +920,22 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
         st.markdown("#### 📋 Schnittliste")
         
         # 1. PLATZHALTER FÜR DIE BUTTONS (Damit sie OBEN erscheinen)
-        # Wir definieren den Container hier, füllen ihn aber erst NACHDEM wir wissen, was ausgewählt wurde.
         action_bar = st.container()
 
         if not st.session_state.saved_cuts:
             st.info("Noch keine Schnitte vorhanden.")
-            # Leere Buttons rendern (Disabled)
             with action_bar:
                 st.button("🗑️ Löschen", disabled=True, use_container_width=True)
         else:
             # Daten vorbereiten
             data = [asdict(c) for c in st.session_state.saved_cuts]
             df_s = pd.DataFrame(data)
-            # Default "Auswahl" auf False setzen, falls noch nicht vorhanden
             if 'Auswahl' not in df_s.columns:
                 df_s['Auswahl'] = False
             
             df_display = df_s[['Auswahl', 'name', 'raw_length', 'cut_length', 'details', 'id']]
             
-            # 2. TABELLE RENDERN
+            # 2. TABELLE RENDERN (st.data_editor ist STABIL)
             edited_df = st.data_editor(
                 df_display, 
                 hide_index=True, 
@@ -978,7 +967,10 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                 
                 # Löschen Button
                 if col_del.button(f"🗑️ Löschen ({num_sel})", disabled=btns_disabled, type="secondary", use_container_width=True):
+                    # FIX (Phase 2): Löschen basierend auf ID ist hier sicher
                     st.session_state.saved_cuts = [c for c in st.session_state.saved_cuts if c.id not in selected_ids]
+                    st.toast(f"🗑️ {num_sel} Einträge gelöscht!", icon="🗑️")
+                    time.sleep(0.5)
                     st.rerun()
                 
                 # Übertragen Button
@@ -1004,15 +996,17 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                                         "charge": "", "charge_apz": "", "schweisser": "", "project_id": active_pid
                                     })
                                     count_fits += 1
-                    st.success(f"Übertragen: {count_pipes} Rohre und {count_fits} Fittings!")
-                    st.toast(f"{count_pipes} Rohre + Fittings gespeichert.", icon="📦")
+                    
+                    # FIX (Phase 2): Toast statt Banner
+                    st.toast(f"✅ {count_pipes} Rohre und {count_fits} Fittings übertragen!", icon="📦")
+                    time.sleep(0.5)
 
-                # Excel Button (Immer aktiv, bezieht sich auf ALLE)
+                # Excel Button
                 fname_base = f"Saege_{proj_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}"
                 excel_data = Exporter.to_excel(df_s)
                 col_excel.download_button("📥 Excel (Alle)", excel_data, f"{fname_base}.xlsx", use_container_width=True)
 
-            # Reset Button ganz unten als "Notausgang"
+            # Reset Button ganz unten
             st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
             if st.button("Alles Reset (Liste leeren)", type="secondary"):
                 st.session_state.saved_cuts = []
@@ -1046,7 +1040,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                     
                     if st.button("➡️ An Säge (2D)", key="btn_2d_saw"):
                         st.session_state.transfer_cut_length = res['cut_length']
-                        st.toast("Maß übertragen!", icon="📏")
+                        st.toast("✅ Maß an Säge übertragen!", icon="📏")
                     
                     fig_2d = Visualizer.plot_2d_offset(res['run'], res['offset'])
                     st.pyplot(fig_2d, use_container_width=False)
@@ -1084,7 +1078,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
             else:
                 if st.button("➡️ An Säge (3D)", key="btn_3d_saw"):
                     st.session_state.transfer_cut_length = cut_len
-                    st.toast("Maß übertragen!", icon="📏")
+                    st.toast("✅ Maß an Säge übertragen!", icon="📏")
 
         with col_vis:
             st.markdown("**3D Simulation**")
@@ -1217,7 +1211,8 @@ def render_logbook(df_pipe: pd.DataFrame):
                 
                 if c_bulk3.button("🚀 Alle ändern", type="primary"):
                     DatabaseRepository.bulk_update(bulk_ids, target_field, new_value)
-                    st.success(f"{len(bulk_ids)} Einträge aktualisiert!")
+                    st.toast(f"🚀 {len(bulk_ids)} Einträge aktualisiert!", icon="✅")
+                    time.sleep(0.5)
                     st.session_state.bulk_edit_ids = []
                     st.rerun()
                 
@@ -1297,7 +1292,8 @@ def render_logbook(df_pipe: pd.DataFrame):
                             "dimension": final_dim_str, "bauteil": bt_val, "laenge": len_val,
                             "charge_apz": apz_val, "schweisser": sch_val
                         })
-                        st.toast("Eintrag aktualisiert!", icon="✅")
+                        st.toast("✅ Eintrag aktualisiert!", icon="✏️")
+                        time.sleep(0.5)
                         st.session_state.editing_id = None
                         st.session_state.bulk_edit_ids = []
                         st.session_state.form_iso = ""
@@ -1324,7 +1320,8 @@ def render_logbook(df_pipe: pd.DataFrame):
                         st.session_state.last_datum = dat_val
                         st.session_state.form_naht = "" 
                         st.session_state.form_len = 0.0
-                        st.success("Gespeichert")
+                        st.toast("✅ Gespeichert!", icon="💾")
+                        time.sleep(0.5)
                         st.rerun()
 
     st.divider()
@@ -1445,7 +1442,8 @@ def render_logbook(df_pipe: pd.DataFrame):
                         DatabaseRepository.delete_entries([st.session_state.editing_id])
                         st.session_state.editing_id = None
                         st.session_state.bulk_edit_ids = []
-                        st.toast("Gelöscht!")
+                        st.toast("🗑️ Gelöscht!")
+                        time.sleep(0.5)
                         st.rerun()
             else:
                 st.warning("⚠️ AgGrid Bibliothek nicht gefunden. Bitte wechsle zur 'Liste (Mobil)' Ansicht.")
@@ -1505,7 +1503,8 @@ def render_logbook(df_pipe: pd.DataFrame):
 
                         if c5.button("🗑️", key=f"del_{row['id']}", help="Löschen"):
                             DatabaseRepository.delete_entries([row['id']])
-                            st.toast("Eintrag gelöscht")
+                            st.toast("🗑️ Eintrag gelöscht")
+                            time.sleep(0.5)
                             st.rerun()
     else:
         st.info(f"Keine Einträge für Projekt '{proj_name}'.")
