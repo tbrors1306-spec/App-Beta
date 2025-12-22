@@ -1,12 +1,3 @@
-import streamlit as st
-# ...
-# AgGrid Import Versuch (Friedlich)
-try:
-    from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
-    AGGRID_AVAILABLE = True
-except ImportError:
-    AGGRID_AVAILABLE = False
-
 import time
 import logging
 import sqlite3
@@ -44,16 +35,16 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_V2_0")
+logger = logging.getLogger("PipeCraft_V2_1")
 
 st.set_page_config(
-    page_title="PipeCraft v2.0",
+    page_title="PipeCraft v2.1",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- CLEAN UI CSS V4.0 ---
+# --- CLEAN UI CSS V4.1 ---
 st.markdown("""
 <style>
     .main .block-container { padding-top: 2rem; padding-bottom: 3rem; background-color: #f8fafc; }
@@ -608,37 +599,6 @@ class Exporter:
         return pdf.output(dest='S').encode('latin-1')
 
     @staticmethod
-    def to_pdf_logbook(df, project_name="Unbekannt"):
-        if not PDF_AVAILABLE: return b""
-        pdf = FPDF(orientation='L', unit='mm', format='A4')
-        pdf.add_page()
-        pdf.set_font("Arial", 'B', 16)
-        pdf.cell(0, 10, f"Rohrbuch: {project_name}", 0, 1, 'L')
-        pdf.set_font("Arial", 'I', 10)
-        pdf.cell(0, 5, f"Stand: {datetime.now().strftime('%d.%m.%Y %H:%M')}", 0, 1, 'L')
-        pdf.ln(5)
-        cols = ["ISO", "Naht", "Datum", "DN", "Bauteil", "APZ", "Schweißer"]
-        widths = [35, 25, 25, 25, 50, 45, 35]
-        pdf.set_font("Arial", 'B', 8)
-        for i, c in enumerate(cols): pdf.cell(widths[i], 8, c, 1)
-        pdf.ln()
-        pdf.set_font("Arial", size=8)
-        export_df = df.drop(columns=['✏️', 'Löschen', 'id', 'project_id'], errors='ignore')
-        for _, row in export_df.iterrows():
-            def g(k): 
-                if k.lower() in row: return str(row[k.lower()])
-                if k=="APZ" and 'charge_apz' in row: return str(row['charge_apz'])
-                if k=="ISO" and 'iso' in row: return str(row['iso'])
-                if k=="DN" and 'dimension' in row: return str(row['dimension'])
-                return ""
-            vals = [g(c) for c in cols]
-            for i, v in enumerate(vals):
-                try: pdf.cell(widths[i], 8, v[:20].encode('latin-1','replace').decode('latin-1'), 1)
-                except: pdf.cell(widths[i], 8, "?", 1)
-            pdf.ln()
-        return pdf.output(dest='S').encode('latin-1')
-
-    @staticmethod
     def to_pdf_sawlist(df, project_name="Unbekannt"):
         if not PDF_AVAILABLE: return b""
         pdf = FPDF(orientation='L', unit='mm', format='A4')
@@ -690,7 +650,7 @@ def init_app_state():
 
 def render_sidebar_projects():
     st.sidebar.title("🏗️ PipeCraft")
-    st.sidebar.caption("v2.0 (Hybrid Grid)")
+    st.sidebar.caption("v2.1 (Stable Fix)")
     
     projects = DatabaseRepository.get_projects() 
     
@@ -1234,56 +1194,73 @@ def render_logbook(df_pipe: pd.DataFrame):
                 grid_response = AgGrid(
                     df, 
                     gridOptions=grid_options,
-                    allow_unsafe_jscode=True, # Nötig für das Ampel-System
+                    allow_unsafe_jscode=True, 
                     update_mode=GridUpdateMode.SELECTION_CHANGED,
                     height=400,
                     theme="streamlit"
                 )
                 
-                # Selection Logic (Master-Detail)
+                # --- FIXED: Robust Selection Logic ---
                 selected = grid_response['selected_rows']
-                if selected:
-                    # AgGrid returns a list of dicts (or a DataFrame depending on version)
-                    # We handle the dict case which is standard
-                    if isinstance(selected, list) and len(selected) > 0:
-                        sel_row = selected[0]
-                    elif isinstance(selected, pd.DataFrame) and not selected.empty:
-                        sel_row = selected.iloc[0].to_dict()
-                    else:
-                        sel_row = None
+                sel_row = None
 
-                    if sel_row and st.session_state.editing_id != sel_row.get('id'):
-                        st.session_state.editing_id = int(sel_row['id'])
-                        st.session_state.form_iso = sel_row['iso']
-                        st.session_state.form_naht = sel_row['naht']
-                        st.session_state.form_apz = sel_row['charge_apz'] if sel_row['charge_apz'] else ""
-                        st.session_state.form_schweisser = sel_row['schweisser'] if sel_row['schweisser'] else ""
-                        st.session_state.form_len = float(sel_row['laenge']) if sel_row['laenge'] else 0.0
+                # Handle DataFrame return (New AgGrid versions)
+                if isinstance(selected, pd.DataFrame):
+                    if not selected.empty:
+                        sel_row = selected.iloc[0].to_dict()
+                
+                # Handle List return (Old AgGrid versions)
+                elif isinstance(selected, list):
+                    if len(selected) > 0:
+                        if isinstance(selected[0], dict):
+                            sel_row = selected[0]
+                        else:
+                            try: sel_row = dict(selected[0])
+                            except: sel_row = None
+
+                if sel_row:
+                    sel_id = sel_row.get('id')
+                    if sel_id and st.session_state.editing_id != sel_id:
+                        st.session_state.editing_id = int(sel_id)
+                        st.session_state.form_iso = sel_row.get('iso', '')
+                        st.session_state.form_naht = sel_row.get('naht', '')
+                        st.session_state.form_apz = sel_row.get('charge_apz', '')
+                        st.session_state.form_schweisser = sel_row.get('schweisser', '')
                         
-                        # Parsing logic same as list view...
+                        l_val = sel_row.get('laenge', 0.0)
+                        st.session_state.form_len = float(l_val) if l_val else 0.0
+                        
                         try: 
-                            d_str = sel_row['datum']
+                            d_str = sel_row.get('datum', datetime.now().strftime("%d.%m.%Y"))
                             st.session_state.form_datum = datetime.strptime(d_str, "%d.%m.%Y").date()
                         except: st.session_state.form_datum = datetime.now().date()
                         
-                        dim_str = str(sel_row['dimension'])
+                        dim_str = str(sel_row.get('dimension', ''))
                         all_dns = re.findall(r'\d+', dim_str)
                         if len(all_dns) > 0:
                             dn_int = int(all_dns[0])
-                            try: st.session_state.form_dn_idx = int(df_pipe[df_pipe['DN'] == dn_int].index[0])
-                            except: st.session_state.form_dn_idx = 8
+                            match = df_pipe[df_pipe['DN'] == dn_int]
+                            if not match.empty:
+                                st.session_state.form_dn_idx = int(match.index[0])
+                            else:
+                                st.session_state.form_dn_idx = 8
+                        
                         if len(all_dns) > 1:
                             dn_red_int = int(all_dns[1])
-                            try: st.session_state.form_dn_red_idx = int(df_pipe[df_pipe['DN'] == dn_red_int].index[0])
-                            except: st.session_state.form_dn_red_idx = 0
+                            match_r = df_pipe[df_pipe['DN'] == dn_red_int]
+                            if not match_r.empty:
+                                st.session_state.form_dn_red_idx = int(match_r.index[0])
+                            else:
+                                st.session_state.form_dn_red_idx = 0
                         
                         bt_options = ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Reduzierung", "Stutzen", "Passstück", "Nippel", "Muffe"]
-                        try: st.session_state.form_bauteil_idx = bt_options.index(sel_row['bauteil'])
+                        val_bt = sel_row.get('bauteil', 'Rohrstoß')
+                        try: st.session_state.form_bauteil_idx = bt_options.index(val_bt)
                         except: st.session_state.form_bauteil_idx = 0
                         
                         st.rerun()
                 
-                # Delete Button for Table View (external)
+                # Delete Button
                 if st.session_state.editing_id:
                     if st.button("🗑️ Ausgewählten Eintrag löschen", type="secondary"):
                         DatabaseRepository.delete_entries([st.session_state.editing_id])
