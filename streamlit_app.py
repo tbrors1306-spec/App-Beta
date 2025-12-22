@@ -15,28 +15,45 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-# --- OPTIONAL IMPORTS: FPDF ---
+# -----------------------------------------------------------------------------
+# 0. SICHERE IMPORTS (DEFENSIVE PROGRAMMIERUNG)
+# -----------------------------------------------------------------------------
+PDF_AVAILABLE = False
+AGGRID_AVAILABLE = False
+
 try:
     from fpdf import FPDF
     PDF_AVAILABLE = True
-except ImportError:
+except (ImportError, ModuleNotFoundError):
     PDF_AVAILABLE = False
 
-# --- OPTIONAL IMPORTS: AgGrid ---
-# FIX #1 & #3: Globaler Check statt lokalem Import, um Abstürze zu verhindern
+# AgGrid: Globaler Import oder None. 
+# Wir definieren die Namen vorab als None, um NameErrors zu verhindern.
+AgGrid = None
+GridOptionsBuilder = None
+GridUpdateMode = None
+JsCode = None
+DataReturnMode = None
+
 try:
-    from st_aggrid import AgGrid, GridUpdateMode, DataReturnMode, JsCode
-    from st_aggrid.grid_options_builder import GridOptionsBuilder
+    from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode, DataReturnMode
     AGGRID_AVAILABLE = True
-except ImportError:
+except (ImportError, ModuleNotFoundError):
+    AGGRID_AVAILABLE = False
+except Exception as e:
+    # Logging ist hier wichtig, damit wir wissen, WARUM es fehlte (z.B. Version mismatch)
+    logging.warning(f"AgGrid Import fehlgeschlagen: {e}")
     AGGRID_AVAILABLE = False
 
-# --- CONFIGURATION ---
+# -----------------------------------------------------------------------------
+# 1. KONFIGURATION
+# -----------------------------------------------------------------------------
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_V2_6_1")
+logger = logging.getLogger("PipeCraft_V2_7_Stable")
 
 st.set_page_config(
-    page_title="PipeCraft v2.6.1 (Debugged)",
+    page_title="PipeCraft v2.7 (Hardened)",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -278,25 +295,43 @@ class SavedCut:
     fittings: List[FittingItem] = field(default_factory=list)
 
 class PipeCalculator:
+    # -----------------------------------------------------------------
+    # LEGACY: Robustes PN-Mapping statt Hardcoding
+    # -----------------------------------------------------------------
+    PN_MAP = {
+        "PN 16": "_16",
+        "PN 10": "_10",
+        "PN 6": "_10", # Fallback example
+        "PN 25": "_16", # Fallback example
+        "PN 40": "_16"  # Fallback example
+    }
+
     def __init__(self, df: pd.DataFrame): self.df = df
+    
     def get_row(self, dn: int) -> pd.Series:
         row = self.df[self.df['DN'] == dn]
         return row.iloc[0] if not row.empty else self.df.iloc[0]
+        
     def get_deduction(self, f_type: str, dn: int, pn: str, angle: float = 90.0) -> float:
         row = self.get_row(dn)
-        suffix = "_16" if pn == "PN 16" else "_10"
+        
+        # Verwende das Mapping, Default zu "_10" wenn unbekannt
+        suffix = self.PN_MAP.get(pn, "_10")
+        
         if "Bogen 90°" in f_type: return float(row['Radius_BA3'])
         if "Zuschnitt" in f_type: return float(row['Radius_BA3']) * math.tan(math.radians(angle / 2))
         if "Flansch" in f_type: return float(row[f'Flansch_b{suffix}'])
         if "T-Stück" in f_type: return float(row['T_Stueck_H'])
         if "Reduzierung" in f_type: return float(row['Red_Laenge_L'])
         return 0.0
+        
     def calculate_bend_details(self, dn: int, angle: float) -> Dict[str, float]:
         row = self.get_row(dn)
         r = float(row['Radius_BA3'])
         da = float(row['D_Aussen'])
         rad = math.radians(angle)
         return {"vorbau": r * math.tan(rad / 2), "bogen_aussen": (r + da/2) * rad, "bogen_mitte": r * rad, "bogen_innen": (r - da/2) * rad}
+        
     def calculate_stutzen_coords(self, dn_haupt: int, dn_stutzen: int) -> pd.DataFrame:
         r_main = self.get_row(dn_haupt)['D_Aussen'] / 2
         r_stub = self.get_row(dn_stutzen)['D_Aussen'] / 2
@@ -310,6 +345,7 @@ class PipeCalculator:
             u_val = (r_stub * 2 * math.pi) * (angle / 360)
             table_data.append({"Winkel": f"{angle}°", "Tiefe (mm)": round(t_val, 1), "Umfang (mm)": round(u_val, 1)})
         return pd.DataFrame(table_data)
+        
     def calculate_2d_offset(self, dn: int, offset: float, angle: float) -> Dict[str, float]:
         row = self.get_row(dn)
         r = float(row['Radius_BA3'])
@@ -320,12 +356,14 @@ class PipeCalculator:
         except: return {"error": "Winkel 0"}
         z_mass = r * math.tan(rad / 2)
         return {"hypotenuse": hypotenuse, "run": run, "z_mass_single": z_mass, "cut_length": hypotenuse - (2*z_mass), "offset": offset, "angle": angle}
+        
     def calculate_rolling_offset(self, dn: int, roll: float, set_val: float, height: float = 0.0) -> Dict[str, float]:
         diag_base = math.sqrt(roll**2 + set_val**2)
         travel = math.sqrt(diag_base**2 + height**2)
         try: required_angle = math.degrees(math.acos(diag_base / travel)) if travel != 0 else 0
         except: required_angle = 0
         return {"travel": travel, "diag_base": diag_base, "angle_calc": required_angle}
+        
     def calculate_segment_bend(self, dn: int, radius: float, num_segments: int, total_angle: float = 90.0) -> Dict[str, float]:
         row = self.get_row(dn)
         od = float(row['D_Aussen'])
@@ -398,7 +436,17 @@ class Visualizer:
         row_h = df_pipe[df_pipe['DN'] == dn_haupt].iloc[0]
         row_s = df_pipe[df_pipe['DN'] == dn_stutzen].iloc[0]
         r_main = row_h['D_Aussen'] / 2; r_stub = row_s['D_Aussen'] / 2
-        if r_stub > r_main: return None
+        
+        # -----------------------------------------------------------------
+        # FIX: Sichere Rückgabe eines leeren Plots bei Fehler
+        # -----------------------------------------------------------------
+        if r_stub > r_main:
+            fig, ax = plt.subplots(figsize=(6, 2))
+            ax.text(0.5, 0.5, "FEHLER: Stutzen > Hauptrohr", ha='center', va='center', color='red', fontsize=12, fontweight='bold')
+            ax.axis('off')
+            plt.close(fig)
+            return fig
+
         angles = range(0, 361, 5); depths = []
         for a in angles:
             try:
@@ -448,8 +496,15 @@ class Visualizer:
         ax.set_xlabel('Seite (Roll)')
         ax.set_ylabel('Länge (Run)')
         ax.set_zlabel('Höhe (Set)')
-        try: ax.set_box_aspect([roll if roll>10 else 100, run if run>10 else 100, set_val if set_val>10 else 100])
-        except: pass
+        
+        # -----------------------------------------------------------------
+        # FIX: Matplotlib Crash Prevention bei 0-Werten
+        # -----------------------------------------------------------------
+        try: 
+            ax.set_box_aspect([roll if roll>10 else 100, run if run>10 else 100, set_val if set_val>10 else 100])
+        except: 
+            pass # Fallback auf Standard-Aspect, wenn Berechnung fehlschlägt
+            
         ax.legend(loc='upper left', fontsize='small')
         plt.close(fig)
         return fig
@@ -708,7 +763,7 @@ def render_smart_input(label: str, db_column: str, current_value: str, key_prefi
 
 def render_sidebar_projects():
     st.sidebar.title("🏗️ PipeCraft")
-    st.sidebar.caption("v2.6.1 (Stable Workflow)")
+    st.sidebar.caption("v2.7 (Hardened)")
     
     projects = DatabaseRepository.get_projects() 
     
@@ -1104,7 +1159,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                     if fig:
                         st.pyplot(fig)
                     else:
-                        st.error("⚠️ Geometrie ungültig: Stutzenradius > Hauptrohrradius")
+                        st.error("⚠️ Geometrie ungültig")
             except ValueError as e: st.error(str(e))
 
 def render_mto_tab(active_pid: int, proj_name: str):
@@ -1298,7 +1353,7 @@ def render_logbook(df_pipe: pd.DataFrame):
             st.session_state.logbook_view_index = 0
 
         if view_mode_sel == "Tabelle (AgGrid)":
-            # FIX #1 & #3: Nur rendern, wenn global verfügbar. Kein lokaler Import mehr nötig.
+            # FIX: Nur rendern, wenn global verfügbar. Kein lokaler Import mehr.
             if AGGRID_AVAILABLE:
                 st.info("💡 **Anleitung:** Wähle mehrere Zeilen aus. Klicke DANN oben rechts auf den kleinen **'Update'** Knopf in der Tabelle, um die Auswahl zu bestätigen!")
                 
@@ -1322,7 +1377,7 @@ def render_logbook(df_pipe: pd.DataFrame):
                 
                 grid_options = gb.build()
                 
-                # AgGrid Call
+                # AgGrid Call - Sicher, weil wir im "if AGGRID_AVAILABLE" Block sind
                 grid_response = AgGrid(
                     df, 
                     gridOptions=grid_options,
@@ -1392,6 +1447,8 @@ def render_logbook(df_pipe: pd.DataFrame):
                         st.session_state.bulk_edit_ids = []
                         st.toast("Gelöscht!")
                         st.rerun()
+            else:
+                st.warning("⚠️ AgGrid Bibliothek nicht gefunden. Bitte wechsle zur 'Liste (Mobil)' Ansicht.")
 
         # --- BRANCH B: LIST VIEW (MOBILE) ---
         else:
