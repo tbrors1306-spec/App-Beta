@@ -35,16 +35,16 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_V2_2")
+logger = logging.getLogger("PipeCraft_V2_3")
 
 st.set_page_config(
-    page_title="PipeCraft v2.2",
+    page_title="PipeCraft v2.3",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- CLEAN UI CSS V4.2 ---
+# --- CLEAN UI CSS V4.3 ---
 st.markdown("""
 <style>
     .main .block-container { padding-top: 2rem; padding-bottom: 3rem; background-color: #f8fafc; }
@@ -599,37 +599,6 @@ class Exporter:
         return pdf.output(dest='S').encode('latin-1')
 
     @staticmethod
-    def to_pdf_logbook(df, project_name="Unbekannt"):
-        if not PDF_AVAILABLE: return b""
-        pdf = FPDF(orientation='L', unit='mm', format='A4')
-        pdf.add_page()
-        pdf.set_font("Arial", 'B', 16)
-        pdf.cell(0, 10, f"Rohrbuch: {project_name}", 0, 1, 'L')
-        pdf.set_font("Arial", 'I', 10)
-        pdf.cell(0, 5, f"Stand: {datetime.now().strftime('%d.%m.%Y %H:%M')}", 0, 1, 'L')
-        pdf.ln(5)
-        cols = ["ISO", "Naht", "Datum", "DN", "Bauteil", "APZ", "Schweißer"]
-        widths = [35, 25, 25, 25, 50, 45, 35]
-        pdf.set_font("Arial", 'B', 8)
-        for i, c in enumerate(cols): pdf.cell(widths[i], 8, c, 1)
-        pdf.ln()
-        pdf.set_font("Arial", size=8)
-        export_df = df.drop(columns=['✏️', 'Löschen', 'id', 'project_id'], errors='ignore')
-        for _, row in export_df.iterrows():
-            def g(k): 
-                if k.lower() in row: return str(row[k.lower()])
-                if k=="APZ" and 'charge_apz' in row: return str(row['charge_apz'])
-                if k=="ISO" and 'iso' in row: return str(row['iso'])
-                if k=="DN" and 'dimension' in row: return str(row['dimension'])
-                return ""
-            vals = [g(c) for c in cols]
-            for i, v in enumerate(vals):
-                try: pdf.cell(widths[i], 8, v[:20].encode('latin-1','replace').decode('latin-1'), 1)
-                except: pdf.cell(widths[i], 8, "?", 1)
-            pdf.ln()
-        return pdf.output(dest='S').encode('latin-1')
-
-    @staticmethod
     def to_pdf_sawlist(df, project_name="Unbekannt"):
         if not PDF_AVAILABLE: return b""
         pdf = FPDF(orientation='L', unit='mm', format='A4')
@@ -659,6 +628,7 @@ class Exporter:
 # 4. UI SEITEN (TABS)
 # -----------------------------------------------------------------------------
 
+# --- CHANGED: Added view_index for hard state lock ---
 def init_app_state():
     defaults = {
         'active_project_id': None,
@@ -673,7 +643,8 @@ def init_app_state():
         'last_apz': '',
         'last_schweisser': '',
         'last_datum': datetime.now(),
-        'form_dn_red_idx': 0 
+        'form_dn_red_idx': 0,
+        'logbook_view_index': 0 # 0=List, 1=Table
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -681,7 +652,7 @@ def init_app_state():
 
 def render_sidebar_projects():
     st.sidebar.title("🏗️ PipeCraft")
-    st.sidebar.caption("v2.2 (Stable View)")
+    st.sidebar.caption("v2.3 (State Locked)")
     
     projects = DatabaseRepository.get_projects() 
     
@@ -736,14 +707,12 @@ def render_sidebar_projects():
     st.sidebar.divider()
     
     with st.sidebar.expander("💾 Datensicherung"):
-        # Export
         if st.session_state.active_project_id:
             json_data = DatabaseRepository.export_project_to_json(st.session_state.active_project_id)
             if json_data:
                 fname = f"Backup_{st.session_state.active_project_name.replace(' ', '_')}.json"
                 st.download_button("📤 Projekt Exportieren", json_data, fname, "application/json")
         
-        # Import
         uploaded_file = st.file_uploader("📥 Projekt Importieren", type=["json"])
         if uploaded_file is not None:
             if st.button("Import Starten"):
@@ -1189,17 +1158,28 @@ def render_logbook(df_pipe: pd.DataFrame):
         fname_base = f"Rohrbuch_{proj_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}"
         ce1.download_button("📥 Excel", Exporter.to_excel(df), f"{fname_base}.xlsx")
         
-        # --- VIEW TOGGLE (FIX: key added) ---
+        # --- VIEW TOGGLE WITH STATE LOCK ---
         st.markdown("### 📋 Einträge")
         
         view_options = ["Liste (Mobil)"]
         if AGGRID_AVAILABLE:
             view_options.append("Tabelle (AgGrid)")
             
-        view_mode = st.radio("Ansicht:", view_options, horizontal=True, label_visibility="collapsed", key="logbook_view_mode")
+        # FIX: Wir setzen den Index manuell auf den gespeicherten Wert
+        # Falls der Index ungültig wäre, fangen wir das ab
+        current_idx = st.session_state.logbook_view_index
+        if current_idx >= len(view_options): current_idx = 0
+        
+        view_mode_sel = st.radio("Ansicht:", view_options, index=current_idx, horizontal=True, label_visibility="collapsed", key="view_toggle_widget")
+        
+        # State Update Logic
+        if view_mode_sel == "Tabelle (AgGrid)":
+            st.session_state.logbook_view_index = 1
+        else:
+            st.session_state.logbook_view_index = 0
 
         # --- BRANCH A: AG-GRID ---
-        if view_mode == "Tabelle (AgGrid)":
+        if view_mode_sel == "Tabelle (AgGrid)":
             if AGGRID_AVAILABLE:
                 st.info("💡 Tipp: Klicke auf eine Zeile, um sie oben zu bearbeiten.")
                 
@@ -1232,7 +1212,6 @@ def render_logbook(df_pipe: pd.DataFrame):
                 selected = grid_response['selected_rows']
                 sel_row = None
 
-                # Robuste Extraktion der Zeile
                 if isinstance(selected, pd.DataFrame):
                     if not selected.empty:
                         sel_row = selected.iloc[0].to_dict()
@@ -1308,6 +1287,7 @@ def render_logbook(df_pipe: pd.DataFrame):
             for index, row in filtered_df.head(50).iterrows():
                 with st.container(border=True):
                     c1, c2, c3, c4, c5 = st.columns([2, 1, 2, 0.5, 0.5])
+                    
                     c1.write(f"**{row['iso']}**")
                     c1.caption(f"Naht: {row['naht']}")
                     c2.write(f"{row['datum']}")
