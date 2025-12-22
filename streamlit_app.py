@@ -3,6 +3,7 @@ import logging
 import sqlite3
 import math
 import re
+import json
 from dataclasses import dataclass, field, asdict
 from io import BytesIO
 from typing import List, Tuple, Optional, Dict
@@ -26,16 +27,16 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_V1_5")
+logger = logging.getLogger("PipeCraft_V1_6")
 
 st.set_page_config(
-    page_title="PipeCraft v1.5",
+    page_title="PipeCraft v1.6",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- CLEAN UI CSS V3.5 ---
+# --- CLEAN UI CSS V3.6 ---
 st.markdown("""
 <style>
     .main .block-container { padding-top: 2rem; padding-bottom: 3rem; background-color: #f8fafc; }
@@ -185,6 +186,42 @@ class DatabaseRepository:
             query = f'''SELECT {column} FROM rohrbuch WHERE project_id = ? AND {column} IS NOT NULL AND {column} != '' GROUP BY {column} ORDER BY MAX(id) DESC LIMIT ?'''
             rows = conn.cursor().execute(query, (project_id, limit)).fetchall()
             return [r[0] for r in rows]
+
+    # --- NEW: EXPORT / IMPORT LOGIC ---
+    @staticmethod
+    def export_project_to_json(project_id: int) -> str:
+        with sqlite3.connect(DB_NAME) as conn:
+            proj = conn.cursor().execute("SELECT name, created_at FROM projects WHERE id = ?", (project_id,)).fetchone()
+            if not proj: return None
+            rows = conn.cursor().execute("SELECT iso, naht, datum, dimension, bauteil, laenge, charge, charge_apz, schweisser FROM rohrbuch WHERE project_id = ?", (project_id,)).fetchall()
+            cols = ["iso", "naht", "datum", "dimension", "bauteil", "laenge", "charge", "charge_apz", "schweisser"]
+            entries = [dict(zip(cols, r)) for r in rows]
+            data = {"project_name": proj[0], "created_at": proj[1], "entries": entries, "version": "1.6"}
+            return json.dumps(data, indent=2)
+
+    @staticmethod
+    def import_project_from_json(json_str: str) -> Tuple[bool, str]:
+        try:
+            data = json.loads(json_str)
+            name = data.get("project_name") + " (Import)"
+            entries = data.get("entries", [])
+            with sqlite3.connect(DB_NAME) as conn:
+                c = conn.cursor()
+                try:
+                    c.execute("INSERT INTO projects (name, created_at, archived) VALUES (?, ?, 0)", (name, datetime.now().strftime("%d.%m.%Y")))
+                    new_pid = c.lastrowid
+                except sqlite3.IntegrityError:
+                    name += f"_{int(time.time())}"
+                    c.execute("INSERT INTO projects (name, created_at, archived) VALUES (?, ?, 0)", (name, datetime.now().strftime("%d.%m.%Y")))
+                    new_pid = c.lastrowid
+                for e in entries:
+                    c.execute('''INSERT INTO rohrbuch (iso, naht, datum, dimension, bauteil, laenge, charge, charge_apz, schweisser, project_id) 
+                                 VALUES (:iso, :naht, :datum, :dimension, :bauteil, :laenge, :charge, :charge_apz, :schweisser, :project_id)''',
+                                 dict(e, project_id=new_pid))
+                conn.commit()
+            return True, f"Projekt '{name}' importiert!"
+        except Exception as e:
+            return False, f"Fehler: {str(e)}"
 
 # -----------------------------------------------------------------------------
 # 3. HELPER & LOGIK
@@ -637,7 +674,7 @@ def init_app_state():
 
 def render_sidebar_projects():
     st.sidebar.title("🏗️ PipeCraft")
-    st.sidebar.caption("v1.5 (TÜV-Ready)")
+    st.sidebar.caption("v1.6 (Safety)")
     
     projects = DatabaseRepository.get_projects() 
     
@@ -690,6 +727,28 @@ def render_sidebar_projects():
                 else: 
                     st.error(msg)
     st.sidebar.divider()
+    
+    # --- CHANGED: Backup Section ---
+    with st.sidebar.expander("💾 Datensicherung"):
+        # Export
+        if st.session_state.active_project_id:
+            json_data = DatabaseRepository.export_project_to_json(st.session_state.active_project_id)
+            if json_data:
+                fname = f"Backup_{st.session_state.active_project_name.replace(' ', '_')}.json"
+                st.download_button("📤 Projekt Exportieren", json_data, fname, "application/json")
+        
+        # Import
+        uploaded_file = st.file_uploader("📥 Projekt Importieren", type=["json"])
+        if uploaded_file is not None:
+            if st.button("Import Starten"):
+                string_data = uploaded_file.getvalue().decode("utf-8")
+                ok, msg = DatabaseRepository.import_project_from_json(string_data)
+                if ok:
+                    st.success(msg)
+                    time.sleep(1)
+                    st.rerun()
+                else:
+                    st.error(msg)
 
 def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn: str):
     st.markdown('<div class="machine-header-saw">🪚 SMARTE SÄGE</div>', unsafe_allow_html=True)
@@ -728,7 +787,7 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
             st.divider()
             st.markdown("**Bauteil-Abzüge (Fittings)**")
             ca1, ca2, ca3, ca4 = st.columns([2, 1.5, 1, 1])
-            f_type = ca1.selectbox("Typ", ["Bogen 90° (BA3)", "Bogen (Zuschnitt)", "Flansch (Vorschweiß)", "T-Stück", "Reduzierung", "Stutzen", "Passstück", "Nippel", "Muffe"], label_visibility="collapsed")
+            f_type = ca1.selectbox("Typ", ["Bogen 90° (BA3)", "Bogen (Zuschnitt)", "Flansch (Vorschweiß)", "T-Stück", "Reduzierung"], label_visibility="collapsed")
             f_dn = ca2.selectbox("DN", df['DN'], index=df['DN'].tolist().index(current_dn), label_visibility="collapsed")
             f_cnt = ca3.number_input("Anz.", 1, 10, 1, label_visibility="collapsed")
             f_ang = 90.0
@@ -1125,8 +1184,6 @@ def render_logbook(df_pipe: pd.DataFrame):
         fname_base = f"Rohrbuch_{proj_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}"
         ce1.download_button("📥 Excel", Exporter.to_excel(df), f"{fname_base}.xlsx")
         
-        # --- PDF PREVIEW PLACEHOLDER IF NEEDED ---
-
         st.markdown("### 📋 Letzte Einträge")
         filter_text = st.text_input("🔍 Suchen (ISO, Naht...)", placeholder="Filter...")
         
