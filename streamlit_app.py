@@ -15,28 +15,36 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-# FPDF optional laden
+# --- OPTIONAL IMPORTS (Graceful Degradation) ---
+# FPDF für PDF Export
 try:
     from fpdf import FPDF
     PDF_AVAILABLE = True
 except ImportError:
     PDF_AVAILABLE = False
 
+# AgGrid für Excel-Tabelle
+try:
+    from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
+    AGGRID_AVAILABLE = True
+except ImportError:
+    AGGRID_AVAILABLE = False
+
 # -----------------------------------------------------------------------------
 # 1. KONFIGURATION & CLEAN DESIGN SYSTEM (CSS)
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_V1_6")
+logger = logging.getLogger("PipeCraft_V2_0")
 
 st.set_page_config(
-    page_title="PipeCraft v1.6",
+    page_title="PipeCraft v2.0",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- CLEAN UI CSS V3.6 ---
+# --- CLEAN UI CSS V4.0 ---
 st.markdown("""
 <style>
     .main .block-container { padding-top: 2rem; padding-bottom: 3rem; background-color: #f8fafc; }
@@ -187,7 +195,6 @@ class DatabaseRepository:
             rows = conn.cursor().execute(query, (project_id, limit)).fetchall()
             return [r[0] for r in rows]
 
-    # --- NEW: EXPORT / IMPORT LOGIC ---
     @staticmethod
     def export_project_to_json(project_id: int) -> str:
         with sqlite3.connect(DB_NAME) as conn:
@@ -674,7 +681,7 @@ def init_app_state():
 
 def render_sidebar_projects():
     st.sidebar.title("🏗️ PipeCraft")
-    st.sidebar.caption("v1.6 (Safety)")
+    st.sidebar.caption("v2.0 (Hybrid Grid)")
     
     projects = DatabaseRepository.get_projects() 
     
@@ -728,7 +735,6 @@ def render_sidebar_projects():
                     st.error(msg)
     st.sidebar.divider()
     
-    # --- CHANGED: Backup Section ---
     with st.sidebar.expander("💾 Datensicherung"):
         # Export
         if st.session_state.active_project_id:
@@ -1077,7 +1083,6 @@ def render_logbook(df_pipe: pd.DataFrame):
             def_dat = st.session_state.last_datum if not st.session_state.editing_id else datetime.now()
 
             c1, c2, c3 = st.columns(3)
-            # ISO Logic
             iso_known = DatabaseRepository.get_known_values('iso', active_pid)
             
             if 'form_iso' not in st.session_state: st.session_state.form_iso = def_iso
@@ -1176,7 +1181,7 @@ def render_logbook(df_pipe: pd.DataFrame):
 
     st.divider()
     
-    # 3. Liste (Unten)
+    # 3. Liste / Tabelle
     df = DatabaseRepository.get_logbook_by_project(active_pid)
     
     if not df.empty:
@@ -1184,44 +1189,75 @@ def render_logbook(df_pipe: pd.DataFrame):
         fname_base = f"Rohrbuch_{proj_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}"
         ce1.download_button("📥 Excel", Exporter.to_excel(df), f"{fname_base}.xlsx")
         
-        st.markdown("### 📋 Letzte Einträge")
-        filter_text = st.text_input("🔍 Suchen (ISO, Naht...)", placeholder="Filter...")
+        # --- VIEW TOGGLE ---
+        st.markdown("### 📋 Einträge")
         
-        if filter_text:
-            filtered_df = df[df.astype(str).apply(lambda x: x.str.contains(filter_text, case=False)).any(axis=1)]
-        else:
-            filtered_df = df
+        view_options = ["Liste (Mobil)"]
+        if AGGRID_AVAILABLE:
+            view_options.append("Tabelle (AgGrid)")
+            
+        view_mode = st.radio("Ansicht:", view_options, horizontal=True, label_visibility="collapsed")
 
-        h1, h2, h3, h4, h5 = st.columns([2, 1, 2, 0.5, 0.5])
-        h1.caption("ISO / Naht")
-        h2.caption("Datum")
-        h3.caption("Bauteil")
-        
-        for index, row in filtered_df.head(50).iterrows():
-            with st.container(border=True):
-                c1, c2, c3, c4, c5 = st.columns([2, 1, 2, 0.5, 0.5])
+        # --- BRANCH A: AG-GRID ---
+        if view_mode == "Tabelle (AgGrid)":
+            if AGGRID_AVAILABLE:
+                st.info("💡 Tipp: Klicke auf eine Zeile, um sie oben zu bearbeiten.")
                 
-                c1.write(f"**{row['iso']}**")
-                c1.caption(f"Naht: {row['naht']}")
-                c2.write(f"{row['datum']}")
-                c3.write(f"{row['bauteil']}")
-                c3.caption(f"{row['dimension']} | {row['schweisser']}")
+                # Configure Grid
+                gb = GridOptionsBuilder.from_dataframe(df.drop(columns=['✏️', 'Löschen', 'project_id'], errors='ignore'))
+                gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=15)
+                gb.configure_selection('single', use_checkbox=True)
+                gb.configure_default_column(editable=False, groupable=True)
                 
-                if not is_archived:
-                    if c4.button("✏️", key=f"edit_{row['id']}", help="Bearbeiten"):
-                        st.session_state.editing_id = int(row['id'])
-                        st.session_state.form_iso = row['iso']
-                        st.session_state.form_naht = row['naht']
-                        st.session_state.form_apz = row['charge_apz'] if row['charge_apz'] else ""
-                        st.session_state.form_schweisser = row['schweisser'] if row['schweisser'] else ""
-                        st.session_state.form_len = float(row['laenge']) if row['laenge'] else 0.0
+                # Conditional Formatting (Rot bei fehlender APZ)
+                js_code_apz = JsCode("""
+                function(params) {
+                    if (params.value == null || params.value == "" || params.value == "OHNE NACHWEIS") {
+                        return {'color': '#ef4444', 'font-weight': 'bold'};
+                    }
+                    return null;
+                }
+                """)
+                gb.configure_column("charge_apz", cellStyle=js_code_apz)
+                
+                grid_options = gb.build()
+                
+                grid_response = AgGrid(
+                    df, 
+                    gridOptions=grid_options,
+                    allow_unsafe_jscode=True, # Nötig für das Ampel-System
+                    update_mode=GridUpdateMode.SELECTION_CHANGED,
+                    height=400,
+                    theme="streamlit"
+                )
+                
+                # Selection Logic (Master-Detail)
+                selected = grid_response['selected_rows']
+                if selected:
+                    # AgGrid returns a list of dicts (or a DataFrame depending on version)
+                    # We handle the dict case which is standard
+                    if isinstance(selected, list) and len(selected) > 0:
+                        sel_row = selected[0]
+                    elif isinstance(selected, pd.DataFrame) and not selected.empty:
+                        sel_row = selected.iloc[0].to_dict()
+                    else:
+                        sel_row = None
+
+                    if sel_row and st.session_state.editing_id != sel_row.get('id'):
+                        st.session_state.editing_id = int(sel_row['id'])
+                        st.session_state.form_iso = sel_row['iso']
+                        st.session_state.form_naht = sel_row['naht']
+                        st.session_state.form_apz = sel_row['charge_apz'] if sel_row['charge_apz'] else ""
+                        st.session_state.form_schweisser = sel_row['schweisser'] if sel_row['schweisser'] else ""
+                        st.session_state.form_len = float(sel_row['laenge']) if sel_row['laenge'] else 0.0
                         
+                        # Parsing logic same as list view...
                         try: 
-                            d_str = row['datum']
+                            d_str = sel_row['datum']
                             st.session_state.form_datum = datetime.strptime(d_str, "%d.%m.%Y").date()
                         except: st.session_state.form_datum = datetime.now().date()
                         
-                        dim_str = str(row['dimension'])
+                        dim_str = str(sel_row['dimension'])
                         all_dns = re.findall(r'\d+', dim_str)
                         if len(all_dns) > 0:
                             dn_int = int(all_dns[0])
@@ -1231,16 +1267,77 @@ def render_logbook(df_pipe: pd.DataFrame):
                             dn_red_int = int(all_dns[1])
                             try: st.session_state.form_dn_red_idx = int(df_pipe[df_pipe['DN'] == dn_red_int].index[0])
                             except: st.session_state.form_dn_red_idx = 0
-
+                        
                         bt_options = ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Reduzierung", "Stutzen", "Passstück", "Nippel", "Muffe"]
-                        try: st.session_state.form_bauteil_idx = bt_options.index(row['bauteil'])
+                        try: st.session_state.form_bauteil_idx = bt_options.index(sel_row['bauteil'])
                         except: st.session_state.form_bauteil_idx = 0
+                        
+                        st.rerun()
+                
+                # Delete Button for Table View (external)
+                if st.session_state.editing_id:
+                    if st.button("🗑️ Ausgewählten Eintrag löschen", type="secondary"):
+                        DatabaseRepository.delete_entries([st.session_state.editing_id])
+                        st.session_state.editing_id = None
+                        st.toast("Gelöscht!")
                         st.rerun()
 
-                    if c5.button("🗑️", key=f"del_{row['id']}", help="Löschen"):
-                        DatabaseRepository.delete_entries([row['id']])
-                        st.toast("Eintrag gelöscht")
-                        st.rerun()
+        # --- BRANCH B: LIST VIEW (Mobile) ---
+        else:
+            filter_text = st.text_input("🔍 Suchen (ISO, Naht...)", placeholder="Filter...")
+            if filter_text:
+                filtered_df = df[df.astype(str).apply(lambda x: x.str.contains(filter_text, case=False)).any(axis=1)]
+            else:
+                filtered_df = df
+
+            h1, h2, h3, h4, h5 = st.columns([2, 1, 2, 0.5, 0.5])
+            h1.caption("ISO / Naht")
+            h2.caption("Datum")
+            h3.caption("Bauteil")
+            
+            for index, row in filtered_df.head(50).iterrows():
+                with st.container(border=True):
+                    c1, c2, c3, c4, c5 = st.columns([2, 1, 2, 0.5, 0.5])
+                    
+                    c1.write(f"**{row['iso']}**")
+                    c1.caption(f"Naht: {row['naht']}")
+                    c2.write(f"{row['datum']}")
+                    c3.write(f"{row['bauteil']}")
+                    c3.caption(f"{row['dimension']} | {row['schweisser']}")
+                    
+                    if not is_archived:
+                        if c4.button("✏️", key=f"edit_{row['id']}", help="Bearbeiten"):
+                            st.session_state.editing_id = int(row['id'])
+                            st.session_state.form_iso = row['iso']
+                            st.session_state.form_naht = row['naht']
+                            st.session_state.form_apz = row['charge_apz'] if row['charge_apz'] else ""
+                            st.session_state.form_schweisser = row['schweisser'] if row['schweisser'] else ""
+                            st.session_state.form_len = float(row['laenge']) if row['laenge'] else 0.0
+                            try: 
+                                d_str = row['datum']
+                                st.session_state.form_datum = datetime.strptime(d_str, "%d.%m.%Y").date()
+                            except: st.session_state.form_datum = datetime.now().date()
+                            
+                            dim_str = str(row['dimension'])
+                            all_dns = re.findall(r'\d+', dim_str)
+                            if len(all_dns) > 0:
+                                dn_int = int(all_dns[0])
+                                try: st.session_state.form_dn_idx = int(df_pipe[df_pipe['DN'] == dn_int].index[0])
+                                except: st.session_state.form_dn_idx = 8
+                            if len(all_dns) > 1:
+                                dn_red_int = int(all_dns[1])
+                                try: st.session_state.form_dn_red_idx = int(df_pipe[df_pipe['DN'] == dn_red_int].index[0])
+                                except: st.session_state.form_dn_red_idx = 0
+
+                            bt_options = ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Reduzierung", "Stutzen", "Passstück", "Nippel", "Muffe"]
+                            try: st.session_state.form_bauteil_idx = bt_options.index(row['bauteil'])
+                            except: st.session_state.form_bauteil_idx = 0
+                            st.rerun()
+
+                        if c5.button("🗑️", key=f"del_{row['id']}", help="Löschen"):
+                            DatabaseRepository.delete_entries([row['id']])
+                            st.toast("Eintrag gelöscht")
+                            st.rerun()
     else:
         st.info(f"Keine Einträge für Projekt '{proj_name}'.")
 
@@ -1335,7 +1432,6 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
         if not df_log.empty and PDF_AVAILABLE:
             st.divider()
             st.markdown("#### Dokumentation (Abruf)")
-            # Wir rufen das PDF ohne neue Meta-Daten ab, da archiviert
             pdf_data = Exporter.to_pdf_final_report(df_log, proj_name, {"order_no": "Archiv", "system_name": "Archiv", "check_rt": True})
             st.download_button("📄 Fertigungsbescheinigung herunterladen", pdf_data, f"Fertigungsbescheinigung_{proj_name}.pdf", "application/pdf", type="primary")
         return
@@ -1344,7 +1440,6 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
     
     df_log = DatabaseRepository.get_logbook_by_project(active_pid)
     
-    # --- INPUT FÜR ZERTIFIKAT ---
     with st.container(border=True):
         st.markdown("#### 1. Projektdaten für Deckblatt")
         c1, c2 = st.columns(2)
@@ -1357,20 +1452,18 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
         check_dim = c_dim.checkbox("Maßhaltigkeit geprüft")
         check_iso = c_iso.checkbox("Isometrie revidiert (As-Built)")
 
-    # Daten-Check
     missing_apz = len(df_log[df_log['charge_apz'].astype(str).str.strip() == ''])
     missing_weld = len(df_log[df_log['schweisser'].astype(str).str.strip() == ''])
     
     ready = True
     if missing_apz > 0 or missing_weld > 0:
         st.warning(f"Hinweis: Es fehlen {missing_apz} APZs und {missing_weld} Schweißer-Einträge.")
-        ready = False # Warnung, aber kein Block
+        ready = False 
 
     st.divider()
     
     col_act, col_pdf = st.columns(2)
     
-    # Meta Daten sammeln
     meta_data = {
         "order_no": in_order,
         "system_name": in_sys,
