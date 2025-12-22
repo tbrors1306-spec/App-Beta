@@ -26,66 +26,26 @@ except ImportError:
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_V1_4")
+logger = logging.getLogger("PipeCraft_V1_5")
 
 st.set_page_config(
-    page_title="PipeCraft v1.4",
+    page_title="PipeCraft v1.5",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- CLEAN UI CSS V3.4 (Card View Support) ---
+# --- CLEAN UI CSS V3.5 ---
 st.markdown("""
 <style>
-    /* 1. Global Reset & Fonts */
-    .main .block-container {
-        padding-top: 2rem;
-        padding-bottom: 3rem;
-        background-color: #f8fafc;
-    }
-    h1, h2, h3, h4, h5 {
-        font-family: 'Segoe UI', Helvetica, Arial, sans-serif;
-        font-weight: 600;
-        color: #1e293b;
-        letter-spacing: -0.5px;
-    }
-    
-    /* 2. Headers - Clean colored accents */
+    .main .block-container { padding-top: 2rem; padding-bottom: 3rem; background-color: #f8fafc; }
+    h1, h2, h3, h4, h5 { font-family: 'Segoe UI', sans-serif; font-weight: 600; color: #1e293b; }
     .machine-header-saw { border-bottom: 4px solid #f97316; color: #f97316; padding: 5px 0; font-weight: 700; font-size: 1.2rem; margin-bottom: 15px; text-transform: uppercase; }
     .machine-header-geo { border-bottom: 4px solid #0ea5e9; color: #0ea5e9; padding: 5px 0; font-weight: 700; font-size: 1.2rem; margin-bottom: 15px; text-transform: uppercase; }
     .machine-header-doc { border-bottom: 4px solid #64748b; color: #64748b; padding: 5px 0; font-weight: 700; font-size: 1.2rem; margin-bottom: 15px; text-transform: uppercase; }
-
-    /* 3. Input Zones & Cards */
-    div[data-testid="stVerticalBlockBorderWrapper"] {
-        background-color: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-        padding: 1.5rem;
-    }
-
-    /* 4. Result Readout */
-    div[data-testid="stMetric"] {
-        background-color: #ffffff;
-        border: 1px solid #cbd5e1;
-        border-radius: 8px;
-        padding: 15px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-    }
-    div[data-testid="stMetric"] label { color: #64748b; font-size: 0.9rem; font-weight: 500; }
-    div[data-testid="stMetric"] div[data-testid="stMetricValue"] { color: #0f172a; font-family: 'Segoe UI', sans-serif; font-weight: 700; font-size: 1.8rem; }
-
-    /* 5. Buttons */
-    .stButton button { border-radius: 6px; font-weight: 600; height: 2.8rem; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-
-    /* 6. Project Tag */
-    .project-tag {
-        font-family: 'Segoe UI', sans-serif;
-        font-weight: 600; color: #475569;
-        padding: 8px 12px; background-color: #e2e8f0;
-        border-radius: 6px; margin-bottom: 20px; display: inline-block;
-    }
+    div[data-testid="stVerticalBlockBorderWrapper"] { background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 1.5rem; }
+    div[data-testid="stMetric"] { background-color: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 15px; }
+    .project-tag { font-family: 'Segoe UI', sans-serif; font-weight: 600; color: #475569; padding: 8px 12px; background-color: #e2e8f0; border-radius: 6px; margin-bottom: 20px; display: inline-block; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -474,43 +434,92 @@ class Exporter:
         return output.getvalue()
 
     @staticmethod
-    def to_pdf_final_report(df_log, project_name):
+    def to_pdf_final_report(df_log, project_name, meta_data=None):
         if not PDF_AVAILABLE: return b""
+        if meta_data is None: meta_data = {}
+        
         pdf = FPDF(orientation='P', unit='mm', format='A4')
+        
+        # --- SEITE 1: Fertigungsbescheinigung ---
         pdf.add_page()
-        pdf.set_font("Arial", 'B', 24)
-        pdf.cell(0, 20, "Abnahmebericht", 0, 1, 'C')
+        # Header
         pdf.set_font("Arial", 'B', 16)
-        pdf.cell(0, 15, f"Projekt: {project_name}", 0, 1, 'C')
-        pdf.ln(20)
-        total_len = 0
-        if 'laenge' in df_log.columns:
-            total_len = pd.to_numeric(df_log['laenge'], errors='coerce').sum() / 1000
-        total_welds = len(df_log)
-        pdf.set_font("Arial", '', 12)
-        pdf.cell(0, 10, f"Erstellt am: {datetime.now().strftime('%d.%m.%Y')}", 0, 1)
-        pdf.cell(0, 10, f"Gesamtlänge Rohrleitung: {total_len:.1f} m", 0, 1)
-        pdf.cell(0, 10, f"Anzahl Einträge / Nähte: {total_welds}", 0, 1)
-        pdf.ln(20)
+        pdf.cell(0, 10, "FERTIGUNGSBESCHEINIGUNG", 0, 1, 'C')
         pdf.set_font("Arial", 'I', 10)
-        pdf.multi_cell(0, 10, "Hiermit wird die mechanische Fertigstellung der oben genannten Rohrleitungen bestätigt. Alle Daten entsprechen dem digitalen Rohrbuch.")
-        pdf.ln(30)
-        pdf.cell(80, 0, "", "B")
-        pdf.cell(20, 0, "")
-        pdf.cell(80, 0, "", "B")
+        pdf.cell(0, 6, "Rohrleitungsbau / Anlagenbau", 0, 1, 'C')
+        pdf.ln(10)
+        
+        # Block 1: Projektdaten
+        pdf.set_font("Arial", 'B', 11)
+        pdf.set_fill_color(220, 220, 220)
+        pdf.cell(0, 8, "1. PROJEKTDATEN", 1, 1, 'L', fill=True)
+        pdf.set_font("Arial", '', 10)
+        
+        # Hilfsfunktion für Zeilen
+        def row_cell(lbl, val):
+            pdf.cell(60, 8, lbl, 1)
+            pdf.cell(0, 8, str(val), 1, 1)
+
+        row_cell("Projekt / Baustelle:", project_name)
+        row_cell("Auftrags-Nr. / Ticket:", meta_data.get('order_no', '-'))
+        row_cell("Anlagenteil / System:", meta_data.get('system_name', '-'))
+        row_cell("Datum der Fertigstellung:", datetime.now().strftime('%d.%m.%Y'))
         pdf.ln(5)
-        pdf.cell(80, 5, "Datum / Bauleitung", 0, 0, 'C')
-        pdf.cell(20, 5, "")
-        pdf.cell(80, 5, "Datum / Auftraggeber", 0, 1, 'C')
+
+        # Block 2: Qualitätssicherung
+        pdf.set_font("Arial", 'B', 11)
+        pdf.cell(0, 8, "2. PRÜFERGEBNISSE & QUALITÄTSSICHERUNG", 1, 1, 'L', fill=True)
+        pdf.set_font("Arial", '', 10)
+        
+        rt_state = "JA / i.O." if meta_data.get('check_rt') else "Nicht gefordert"
+        dim_state = "JA / i.O." if meta_data.get('check_dim') else "Nein"
+        iso_state = "JA / i.O." if meta_data.get('check_iso') else "Nein"
+        
+        row_cell("Zerstörungsfreie Prüfung (RT):", rt_state)
+        row_cell("Maßhaltigkeit geprüft:", dim_state)
+        row_cell("Isometrie revidiert (As-Built):", iso_state)
+        row_cell("Materialzeugnisse (APZ) vorh.:", "Siehe Anlage")
+        pdf.ln(5)
+        
+        # Block 3: Bestätigung
+        pdf.set_font("Arial", '', 10)
+        pdf.multi_cell(0, 6, "Hiermit wird bestätigt, dass die oben genannten Rohrleitungen fachgerecht nach den geltenden Regeln der Technik und den vorliegenden Isometrien gefertigt wurden. Alle Schweißnähte wurden, soweit gefordert, einer Röntgenprüfung (RT) unterzogen und für in Ordnung befunden.")
+        pdf.ln(15)
+
+        # Block 4: Unterschriften
+        y_sig = pdf.get_y()
+        pdf.line(10, y_sig, 200, y_sig)
+        pdf.ln(2)
+        
+        # 3 Spalten Layout
+        col_w = 63
+        pdf.set_font("Arial", 'B', 8)
+        pdf.cell(col_w, 5, "Ersteller / Fachfirma", 0, 0, 'C')
+        pdf.cell(col_w, 5, "Bauleitung / Supervisor", 0, 0, 'C')
+        pdf.cell(col_w, 5, "Abnahme / TÜV", 0, 1, 'C')
+        
+        pdf.ln(15) # Platz für Unterschrift
+        
+        pdf.cell(col_w, 0, "", "B") # Linie
+        pdf.cell(col_w, 0, "", "B")
+        pdf.cell(col_w, 0, "", "B")
+        pdf.ln(2)
+        pdf.set_font("Arial", '', 7)
+        pdf.cell(col_w, 4, "Datum / Unterschrift", 0, 0, 'C')
+        pdf.cell(col_w, 4, "Datum / Unterschrift", 0, 0, 'C')
+        pdf.cell(col_w, 4, "Datum / Unterschrift / Stempel", 0, 1, 'C')
+
+        # --- SEITE 2: Traceability Liste ---
         pdf.add_page()
-        pdf.set_font("Arial", 'B', 16)
-        pdf.cell(0, 15, "Rückverfolgbarkeit (Traceability)", 0, 1, 'L')
+        pdf.set_font("Arial", 'B', 14)
+        pdf.cell(0, 10, "ANLAGE 1: Material-Rückverfolgbarkeit", 0, 1, 'L')
         pdf.ln(5)
+        
         df_log['charge_apz'] = df_log['charge_apz'].fillna('OHNE NACHWEIS').replace('', 'OHNE NACHWEIS')
         groups = df_log.groupby('charge_apz')
         pdf.set_font("Arial", size=10)
         for apz, group in groups:
-            pdf.set_fill_color(230, 230, 230)
+            pdf.set_fill_color(240, 240, 240)
             pdf.set_font("Arial", 'B', 10)
             pdf.cell(0, 8, f"Charge / APZ: {apz}", 1, 1, 'L', fill=True)
             pdf.set_font("Arial", size=9)
@@ -523,6 +532,26 @@ class Exporter:
                 pdf.cell(90, 6, txt, 1)
                 pdf.cell(0, 6, f"Verbaut in: {iso_txt}", 1, 1)
             pdf.ln(2)
+
+        # --- SEITE 3: Rohrbuch (Tabelle) ---
+        pdf.add_page()
+        pdf.set_font("Arial", 'B', 14)
+        pdf.cell(0, 10, "ANLAGE 2: Detailliertes Rohrbuch", 0, 1, 'L')
+        pdf.ln(5)
+        
+        cols = ["ISO", "Naht", "DN", "Bauteil", "Schweißer"]
+        widths = [40, 30, 30, 60, 30]
+        pdf.set_font("Arial", 'B', 9)
+        for i, c in enumerate(cols): pdf.cell(widths[i], 8, c, 1)
+        pdf.ln()
+        
+        pdf.set_font("Arial", size=9)
+        for _, row in df_log.iterrows():
+            vals = [str(row.get(k.lower(), '')) if k.lower() != 'dn' else str(row.get('dimension','')) for k in cols]
+            for i, v in enumerate(vals):
+                pdf.cell(widths[i], 7, v[:25].encode('latin-1','replace').decode('latin-1'), 1)
+            pdf.ln()
+
         return pdf.output(dest='S').encode('latin-1')
 
     @staticmethod
@@ -600,7 +629,7 @@ def init_app_state():
         'last_apz': '',
         'last_schweisser': '',
         'last_datum': datetime.now(),
-        'form_dn_red_idx': 0 # New: Reducer second DN
+        'form_dn_red_idx': 0 
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -608,7 +637,7 @@ def init_app_state():
 
 def render_sidebar_projects():
     st.sidebar.title("🏗️ PipeCraft")
-    st.sidebar.caption("v1.4 (Redux)")
+    st.sidebar.caption("v1.5 (TÜV-Ready)")
     
     projects = DatabaseRepository.get_projects() 
     
@@ -699,7 +728,7 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
             st.divider()
             st.markdown("**Bauteil-Abzüge (Fittings)**")
             ca1, ca2, ca3, ca4 = st.columns([2, 1.5, 1, 1])
-            f_type = ca1.selectbox("Typ", ["Bogen 90° (BA3)", "Bogen (Zuschnitt)", "Flansch (Vorschweiß)", "T-Stück", "Reduzierung"], label_visibility="collapsed")
+            f_type = ca1.selectbox("Typ", ["Bogen 90° (BA3)", "Bogen (Zuschnitt)", "Flansch (Vorschweiß)", "T-Stück", "Reduzierung", "Stutzen", "Passstück", "Nippel", "Muffe"], label_visibility="collapsed")
             f_dn = ca2.selectbox("DN", df['DN'], index=df['DN'].tolist().index(current_dn), label_visibility="collapsed")
             f_cnt = ca3.number_input("Anz.", 1, 10, 1, label_visibility="collapsed")
             f_ang = 90.0
@@ -1017,7 +1046,6 @@ def render_logbook(df_pipe: pd.DataFrame):
             if 'form_bauteil_idx' not in st.session_state: st.session_state.form_bauteil_idx = 0
             bt_idx = st.session_state.form_bauteil_idx
             
-            # --- CHANGED: Added 'Reduzierung' ---
             bt_options = ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Reduzierung", "Stutzen", "Passstück", "Nippel", "Muffe"]
             if bt_idx >= len(bt_options): bt_idx = 0
             
@@ -1029,7 +1057,6 @@ def render_logbook(df_pipe: pd.DataFrame):
             
             dn_val = c5.selectbox("Dimension", df_pipe['DN'], index=dn_idx, key="inp_dn")
             
-            # --- CHANGED: Logic for Reducer Second Dimension ---
             if bt_val == "Reduzierung":
                 if 'form_dn_red_idx' not in st.session_state: st.session_state.form_dn_red_idx = 0
                 r_idx = st.session_state.form_dn_red_idx
@@ -1090,45 +1117,39 @@ def render_logbook(df_pipe: pd.DataFrame):
 
     st.divider()
     
-    # 3. Liste (Unten) - CHANGED: CARD VIEW & SEARCH
+    # 3. Liste (Unten)
     df = DatabaseRepository.get_logbook_by_project(active_pid)
     
     if not df.empty:
         ce1, ce2, _ = st.columns([1,1,3])
         fname_base = f"Rohrbuch_{proj_name.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}"
         ce1.download_button("📥 Excel", Exporter.to_excel(df), f"{fname_base}.xlsx")
-        if PDF_AVAILABLE: 
-            ce2.download_button("📄 PDF", Exporter.to_pdf_logbook(df, project_name=proj_name), f"{fname_base}.pdf")
+        
+        # --- PDF PREVIEW PLACEHOLDER IF NEEDED ---
 
         st.markdown("### 📋 Letzte Einträge")
         filter_text = st.text_input("🔍 Suchen (ISO, Naht...)", placeholder="Filter...")
         
-        # Filter Logic
         if filter_text:
             filtered_df = df[df.astype(str).apply(lambda x: x.str.contains(filter_text, case=False)).any(axis=1)]
         else:
             filtered_df = df
 
-        # Header for List
         h1, h2, h3, h4, h5 = st.columns([2, 1, 2, 0.5, 0.5])
         h1.caption("ISO / Naht")
         h2.caption("Datum")
         h3.caption("Bauteil")
         
-        # Show only last 50 items for performance
         for index, row in filtered_df.head(50).iterrows():
             with st.container(border=True):
                 c1, c2, c3, c4, c5 = st.columns([2, 1, 2, 0.5, 0.5])
                 
                 c1.write(f"**{row['iso']}**")
                 c1.caption(f"Naht: {row['naht']}")
-                
                 c2.write(f"{row['datum']}")
-                
                 c3.write(f"{row['bauteil']}")
                 c3.caption(f"{row['dimension']} | {row['schweisser']}")
                 
-                # --- CHANGED: Real Buttons ---
                 if not is_archived:
                     if c4.button("✏️", key=f"edit_{row['id']}", help="Bearbeiten"):
                         st.session_state.editing_id = int(row['id'])
@@ -1143,15 +1164,12 @@ def render_logbook(df_pipe: pd.DataFrame):
                             st.session_state.form_datum = datetime.strptime(d_str, "%d.%m.%Y").date()
                         except: st.session_state.form_datum = datetime.now().date()
                         
-                        # Parse Dimension for Reducer Support
                         dim_str = str(row['dimension'])
                         all_dns = re.findall(r'\d+', dim_str)
-                        
                         if len(all_dns) > 0:
                             dn_int = int(all_dns[0])
                             try: st.session_state.form_dn_idx = int(df_pipe[df_pipe['DN'] == dn_int].index[0])
                             except: st.session_state.form_dn_idx = 8
-                        
                         if len(all_dns) > 1:
                             dn_red_int = int(all_dns[1])
                             try: st.session_state.form_dn_red_idx = int(df_pipe[df_pipe['DN'] == dn_red_int].index[0])
@@ -1160,7 +1178,6 @@ def render_logbook(df_pipe: pd.DataFrame):
                         bt_options = ["Rohrstoß", "Bogen", "Flansch", "T-Stück", "Reduzierung", "Stutzen", "Passstück", "Nippel", "Muffe"]
                         try: st.session_state.form_bauteil_idx = bt_options.index(row['bauteil'])
                         except: st.session_state.form_bauteil_idx = 0
-                        
                         st.rerun()
 
                     if c5.button("🗑️", key=f"del_{row['id']}", help="Löschen"):
@@ -1243,9 +1260,12 @@ def render_tab_handbook(calc: PipeCalculator, dn: int, pn: str):
             m2.metric("Schlüsselweite", f"SW {sw} mm", "Nuss/Ring")
             m3.metric("Drehmoment", f"{torque} Nm", "Geschmiert" if is_lubed else "Trocken")
 
-# --- V10.0: PROJECT CLOSE-OUT TAB ---
+# -----------------------------------------------------------------------------
+# 5. ABSCHLUSS & ARCHIV (TÜV-READY)
+# -----------------------------------------------------------------------------
+
 def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
-    st.markdown('<div class="machine-header-doc">🏁 ABSCHLUSS & ARCHIV</div>', unsafe_allow_html=True)
+    st.markdown('<div class="machine-header-doc">🏁 FERTIGSTELLUNG (HANDOVER)</div>', unsafe_allow_html=True)
     
     if is_archived:
         st.warning(f"Projekt '{proj_name}' ist abgeschlossen und archiviert.")
@@ -1257,76 +1277,76 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
         df_log = DatabaseRepository.get_logbook_by_project(active_pid)
         if not df_log.empty and PDF_AVAILABLE:
             st.divider()
-            st.markdown("#### Dokumentation")
-            pdf_data = Exporter.to_pdf_final_report(df_log, proj_name)
-            st.download_button("📄 Endbericht herunterladen", pdf_data, f"Endbericht_{proj_name}.pdf", "application/pdf", type="primary")
+            st.markdown("#### Dokumentation (Abruf)")
+            # Wir rufen das PDF ohne neue Meta-Daten ab, da archiviert
+            pdf_data = Exporter.to_pdf_final_report(df_log, proj_name, {"order_no": "Archiv", "system_name": "Archiv", "check_rt": True})
+            st.download_button("📄 Fertigungsbescheinigung herunterladen", pdf_data, f"Fertigungsbescheinigung_{proj_name}.pdf", "application/pdf", type="primary")
         return
 
-    st.info("Hier wird das Projekt finalisiert und der Endbericht erstellt.")
+    st.info("Erstellung der Fertigungsbescheinigung für die Abnahme.")
     
     df_log = DatabaseRepository.get_logbook_by_project(active_pid)
     
-    # V10.1 IMPROVED CHECK
-    missing_apz = len(df_log[
-        df_log['charge_apz'].isna() | 
-        (df_log['charge_apz'].astype(str).str.strip() == '')
-    ])
-    
-    missing_weld = len(df_log[
-        df_log['schweisser'].isna() | 
-        (df_log['schweisser'].astype(str).str.strip() == '')
-    ])
-    
-    open_cuts = len(st.session_state.saved_cuts)
-    
-    health_score = 100
-    if missing_apz > 0: health_score -= 30
-    if missing_weld > 0: health_score -= 30
-    if open_cuts > 0: health_score -= 20
-    
+    # --- INPUT FÜR ZERTIFIKAT ---
     with st.container(border=True):
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Fehlende APZ", missing_apz, "Einträge")
-        c2.metric("Fehlende Schweißer", missing_weld, "Einträge")
-        c3.metric("Offene Säge-Liste", open_cuts, "Nicht übertragen")
-    
-    if health_score == 100:
-        st.success("✅ Alle Daten vollständig. Bereit für Abschluss.")
-        ready = True
-    else:
-        st.error(f"⚠️ Daten unvollständig (Score: {health_score}%). Bitte nachtragen.")
-        ready = False
+        st.markdown("#### 1. Projektdaten für Deckblatt")
+        c1, c2 = st.columns(2)
+        in_order = c1.text_input("Auftrags-Nr. / Ticket", placeholder="z.B. A-2024-55")
+        in_sys = c2.text_input("Anlagenteil / System", placeholder="z.B. Kältewasser VL")
         
+        st.markdown("#### 2. Qualitätssicherung (Bestätigung)")
+        c_rt, c_dim, c_iso = st.columns(3)
+        check_rt = c_rt.checkbox("ZfP: RT (Röntgen) durchgeführt & i.O.", value=True)
+        check_dim = c_dim.checkbox("Maßhaltigkeit geprüft")
+        check_iso = c_iso.checkbox("Isometrie revidiert (As-Built)")
+
+    # Daten-Check
+    missing_apz = len(df_log[df_log['charge_apz'].astype(str).str.strip() == ''])
+    missing_weld = len(df_log[df_log['schweisser'].astype(str).str.strip() == ''])
+    
+    ready = True
+    if missing_apz > 0 or missing_weld > 0:
+        st.warning(f"Hinweis: Es fehlen {missing_apz} APZs und {missing_weld} Schweißer-Einträge.")
+        ready = False # Warnung, aber kein Block
+
     st.divider()
     
     col_act, col_pdf = st.columns(2)
     
+    # Meta Daten sammeln
+    meta_data = {
+        "order_no": in_order,
+        "system_name": in_sys,
+        "check_rt": check_rt,
+        "check_dim": check_dim,
+        "check_iso": check_iso
+    }
+
     with col_act:
         force_close = False
         if not ready:
-            force_close = st.checkbox("⚠️ Trotz fehlender Daten abschließen (Auf eigene Verantwortung)")
+            force_close = st.checkbox("⚠️ Trotz fehlender Daten abschließen")
         
         if ready or force_close:
-            if st.button("🏁 PROJEKT ABSCHLIESSEN (ARCHIVIEREN)", type="primary"):
+            if st.button("🏁 BESCHEINIGUNG ERSTELLEN & ARCHIVIEREN", type="primary"):
                 DatabaseRepository.toggle_archive_project(active_pid, True)
                 st.session_state.project_archived = 1
                 st.balloons()
                 st.rerun()
         else:
-            st.button("🏁 Projekt abschließen", disabled=True, help="Erst Mängel beheben oder Checkbox aktivieren")
+            st.button("🏁 Abschließen", disabled=True)
 
     with col_pdf:
         if not df_log.empty and PDF_AVAILABLE:
-            pdf_data = Exporter.to_pdf_final_report(df_log, proj_name)
-            st.download_button("📄 Endbericht (Vorschau)", pdf_data, f"Endbericht_Preview_{proj_name}.pdf", "application/pdf")
+            pdf_data = Exporter.to_pdf_final_report(df_log, proj_name, meta_data)
+            st.download_button("📄 Vorschau: Fertigungsbescheinigung", pdf_data, f"Vorschau_Bescheinigung_{proj_name}.pdf", "application/pdf")
 
 # -----------------------------------------------------------------------------
-# 5. MAIN
+# 6. MAIN
 # -----------------------------------------------------------------------------
 
 def main():
     init_app_state()
-
     DatabaseRepository.init_db()
     df_pipe = get_pipe_data()
     calc = PipeCalculator(df_pipe)
@@ -1338,7 +1358,7 @@ def main():
         dn = st.selectbox("Nennweite", df_pipe['DN'], index=8)
         pn = st.radio("Druckstufe", ["PN 16", "PN 10"], horizontal=True)
 
-    t1, t2, t3, t4, t5, t6 = st.tabs(["🪚 Smarte Säge", "📐 Geometrie", "📝 Rohrbuch", "📦 Material", "📚 Smart Data", "🏁 Abschluss"])
+    t1, t2, t3, t4, t5, t6 = st.tabs(["🪚 Smarte Säge", "📐 Geometrie", "📝 Rohrbuch", "📦 Material", "📚 Smart Data", "🏁 Handover"])
     
     with t1: render_smart_saw(calc, df_pipe, dn, pn)
     with t2: render_geometry_tools(calc, df_pipe)
