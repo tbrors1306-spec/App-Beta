@@ -30,10 +30,10 @@ except (ImportError, ModuleNotFoundError):
 # -----------------------------------------------------------------------------
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("PipeCraft_V3_2_Final")
+logger = logging.getLogger("PipeCraft_V3_3_Final")
 
 st.set_page_config(
-    page_title="PipeCraft v3.2",
+    page_title="PipeCraft v3.3",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -717,7 +717,7 @@ def render_smart_input(label: str, db_column: str, current_value: str, key_prefi
 
 def render_sidebar_projects():
     st.sidebar.title("🏗️ PipeCraft")
-    st.sidebar.caption("v3.2 (Mobile)")
+    st.sidebar.caption("v3.3 (Combined Form)")
     
     projects = DatabaseRepository.get_projects() 
     
@@ -803,10 +803,12 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
         st.info("Projekt ist abgeschlossen. Keine neuen Schnitte möglich.")
         return
 
+    # Init saved cuts clean up
     if st.session_state.saved_cuts:
         try: _ = st.session_state.saved_cuts[0].fittings
         except AttributeError: st.session_state.saved_cuts = []
 
+    # Transfer logic
     default_raw = 0.0
     if 'transfer_cut_length' in st.session_state:
         default_raw = st.session_state.pop('transfer_cut_length')
@@ -814,67 +816,13 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
 
     c_calc, c_list = st.columns([1.3, 1.7])
 
+    # --- LINKER BEREICH: RECHNER ---
     with c_calc:
         with st.container(border=True):
-            st.markdown("**1. Neuer Schnitt**")
-            with st.form(key="saw_input_form"):
-                cut_name = st.text_input("Bezeichnung / Spool", placeholder="z.B. Strang A - 01", help="Name für die Liste")
-                raw_len = st.number_input("Schnittmaß (Roh) [mm]", value=default_raw, min_value=0.0, step=10.0, format="%.1f")
-                
-                cg1, cg2, cg3 = st.columns(3)
-                gap = cg1.number_input("Spalt (mm)", value=3.0, step=0.5)
-                dicht_anz = cg2.number_input("Dichtungen", 0, 5, 0)
-                dicht_thk = cg3.number_input("Dicke (mm)", 0.0, 5.0, 2.0) 
-                
-                # --- CHANGE: Berechnen Button im Formular (ganz unten) ---
-                calc_submitted = st.form_submit_button("Berechnen 🔄", type="secondary", use_container_width=True)
-
-            # --- Calculation Logic outside form to access session state safely ---
-            sum_fit = sum(i.total_deduction for i in st.session_state.fitting_list)
-            sum_gap = sum(i.count for i in st.session_state.fitting_list) * gap
-            sum_gskt = dicht_anz * dicht_thk
-            total = sum_fit + sum_gap + sum_gskt
-            final = raw_len - total
-
-            # --- RESULT DISPLAY (Always visible, updated on calc) ---
-            if final < 0: 
-                st.error(f"Negativmaß! ({final:.1f} mm)")
-            else:
-                st.metric("Sägelänge", f"{final:.1f} mm", delta=None)
-                st.caption(f"Abzüge: Teile -{sum_fit:.1f} | Spalte -{sum_gap:.1f} | Dicht. -{sum_gskt:.1f}")
-                
-                # --- CHANGE: Speichern Button DIRECTLY below result ---
-                if st.button("💾 SPEICHERN", type="primary", use_container_width=True):
-                    if raw_len > 0:
-                        final_name = cut_name if cut_name.strip() else f"Schnitt"
-                        current_fittings_copy = list(st.session_state.fitting_list)
-                        new_id = int(time.time() * 1000) 
-                        new_cut = SavedCut(new_id, final_name, raw_len, final, f"{len(current_fittings_copy)} Teile", datetime.now().strftime("%H:%M"), current_fittings_copy)
-                        st.session_state.saved_cuts.append(new_cut)
-                        st.session_state.fitting_list = [] 
-                        st.toast("✅ Schnitt gespeichert!", icon="💾")
-                        time.sleep(0.5)
-                        st.rerun()
-
-            st.divider()
             
-            st.markdown("**Bauteil-Abzüge (Fittings)**")
-            ca1, ca2, ca3, ca4 = st.columns([2, 1.5, 1, 1])
-            f_type = ca1.selectbox("Typ", ["Bogen 90° (BA3)", "Bogen (Zuschnitt)", "Flansch (Vorschweiß)", "T-Stück", "Reduzierung"], label_visibility="collapsed")
-            f_dn = ca2.selectbox("DN", df['DN'], index=df['DN'].tolist().index(current_dn), label_visibility="collapsed")
-            f_cnt = ca3.number_input("Anz.", 1, 10, 1, label_visibility="collapsed")
-            f_ang = 90.0
-            if "Zuschnitt" in f_type: f_ang = st.slider("Winkel", 0, 90, 45)
-
-            if ca4.button("➕", type="primary"):
-                deduct = calc.get_deduction(f_type, f_dn, pn, f_ang)
-                uid = f"{len(st.session_state.fitting_list)}_{datetime.now().timestamp()}"
-                nm = f"{f_type} DN{f_dn}" + (f" ({f_ang}°)" if "Zuschnitt" in f_type else "")
-                st.session_state.fitting_list.append(FittingItem(uid, nm, f_cnt, deduct, f_dn))
-                st.rerun()
-
+            # 1. LISTE DER BEREITS GEWÄHLTEN BAUTEILE (Außerhalb Form für Delete)
             if st.session_state.fitting_list:
-                st.markdown("###### Aktuelle Abzüge:")
+                st.markdown("###### 🛒 Gewählte Abzüge:")
                 for i, item in enumerate(st.session_state.fitting_list):
                     cr1, cr2, cr3 = st.columns([3, 1.5, 0.5])
                     cr1.text(f"{item.count}x {item.name}")
@@ -882,10 +830,106 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                     if cr3.button("x", key=f"d_{item.id}"):
                         st.session_state.fitting_list.pop(i)
                         st.rerun()
-                if st.button("Reset Abzüge", type="secondary"):
+                
+                if st.button("Alle Abzüge leeren", type="secondary", key="clear_fits"):
                     st.session_state.fitting_list = []
                     st.rerun()
+                st.divider()
 
+            # 2. DAS HAUPT-FORMULAR
+            with st.form(key="combined_saw_form"):
+                st.markdown("**1. Schnittdaten**")
+                cut_name = st.text_input("Bezeichnung / Spool", placeholder="z.B. Strang A - 01")
+                raw_len = st.number_input("Schnittmaß (Roh) [mm]", value=default_raw, min_value=0.0, step=10.0, format="%.1f")
+                
+                cg1, cg2, cg3 = st.columns(3)
+                gap = cg1.number_input("Spalt (mm)", value=3.0, step=0.5)
+                dicht_anz = cg2.number_input("Dichtungen", 0, 5, 0)
+                dicht_thk = cg3.number_input("Dicke", 0.0, 5.0, 2.0)
+
+                st.markdown("---")
+                st.markdown("**2. Weiteres Bauteil hinzufügen (Optional)**")
+                
+                cf1, cf2 = st.columns([1.5, 1])
+                f_type = cf1.selectbox("Typ", ["Bogen 90° (BA3)", "Bogen (Zuschnitt)", "Flansch (Vorschweiß)", "T-Stück", "Reduzierung"], label_visibility="collapsed")
+                
+                try: 
+                    default_dn_idx = df['DN'].tolist().index(current_dn)
+                except: 
+                    default_dn_idx = 0
+                f_dn = cf2.selectbox("DN", df['DN'], index=default_dn_idx, label_visibility="collapsed")
+                
+                cf3, cf4 = st.columns([1, 1])
+                f_cnt = cf3.number_input("Anzahl", 1, 10, 1)
+                f_ang = 90.0
+                if "Zuschnitt" in f_type: 
+                    f_ang = cf4.slider("Winkel", 0, 90, 45)
+                else:
+                    cf4.markdown("") # Spacer
+
+                st.markdown("<br>", unsafe_allow_html=True)
+                
+                col_btn_add, col_btn_calc = st.columns(2)
+                
+                # Button A: Fügt Bauteil hinzu UND berechnet
+                submitted_add = col_btn_add.form_submit_button("➕ Bauteil dazu", type="secondary", use_container_width=True)
+                
+                # Button B: Nur Berechnen
+                submitted_calc = col_btn_calc.form_submit_button("🔄 Berechnen", type="primary", use_container_width=True)
+
+            # --- LOGIK NACH DEM FORMULAR-SUBMIT ---
+            
+            # Fall A: Bauteil hinzufügen
+            if submitted_add:
+                deduct = calc.get_deduction(f_type, f_dn, pn, f_ang)
+                uid = f"{len(st.session_state.fitting_list)}_{datetime.now().timestamp()}"
+                nm = f"{f_type} DN{f_dn}" + (f" ({f_ang}°)" if "Zuschnitt" in f_type else "")
+                st.session_state.fitting_list.append(FittingItem(uid, nm, f_cnt, deduct, f_dn))
+                st.toast(f"✅ {nm} hinzugefügt!", icon="➕")
+
+            # Fall B oder A: Berechnen
+            if submitted_add or submitted_calc:
+                sum_fit = sum(i.total_deduction for i in st.session_state.fitting_list)
+                sum_gap = sum(i.count for i in st.session_state.fitting_list) * gap
+                sum_gskt = dicht_anz * dicht_thk
+                total = sum_fit + sum_gap + sum_gskt
+                final = raw_len - total
+                
+                st.session_state.last_calc_result = {
+                    "final": final, "raw": raw_len, "total_deduct": total,
+                    "info": f"Teile -{sum_fit:.1f} | Spalte -{sum_gap:.1f} | Dicht. -{sum_gskt:.1f}"
+                }
+
+            # --- ERGEBNIS ANZEIGE ---
+            if 'last_calc_result' in st.session_state:
+                res = st.session_state.last_calc_result
+                
+                if res['final'] < 0:
+                    st.error(f"⚠️ Negativmaß! ({res['final']:.1f} mm)")
+                else:
+                    st.divider()
+                    st.metric("Sägelänge (Z)", f"{res['final']:.1f} mm")
+                    st.caption(res['info'])
+                    
+                    if st.button("💾 IN LISTE SPEICHERN", type="primary", use_container_width=True):
+                        final_name = cut_name if cut_name.strip() else f"Schnitt"
+                        current_fittings_copy = list(st.session_state.fitting_list)
+                        new_id = int(time.time() * 1000)
+                        
+                        new_cut = SavedCut(new_id, final_name, res['raw'], res['final'], 
+                                         f"{len(current_fittings_copy)} Teile", 
+                                         datetime.now().strftime("%H:%M"), 
+                                         current_fittings_copy)
+                        
+                        st.session_state.saved_cuts.append(new_cut)
+                        st.session_state.fitting_list = [] 
+                        del st.session_state.last_calc_result
+                        
+                        st.toast("✅ Schnitt gespeichert!", icon="💾")
+                        time.sleep(0.5)
+                        st.rerun()
+
+    # --- RECHTER BEREICH: LISTE ---
     with c_list:
         st.markdown("#### 📋 Schnittliste")
         action_bar = st.container()
@@ -897,8 +941,7 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
         else:
             data = [asdict(c) for c in st.session_state.saved_cuts]
             df_s = pd.DataFrame(data)
-            if 'Auswahl' not in df_s.columns:
-                df_s['Auswahl'] = False
+            if 'Auswahl' not in df_s.columns: df_s['Auswahl'] = False
             
             df_display = df_s[['Auswahl', 'name', 'raw_length', 'cut_length', 'details', 'id']]
             
@@ -932,7 +975,7 @@ def render_smart_saw(calc: PipeCalculator, df: pd.DataFrame, current_dn: int, pn
                     time.sleep(0.5)
                     st.rerun()
                 
-                if col_trans.button(f"📝 Übertragen ({num_sel})", disabled=btns_disabled, type="primary", use_container_width=True, help="Überträgt Rohr + Anbauteile ins Rohrbuch"):
+                if col_trans.button(f"📝 Übertragen ({num_sel})", disabled=btns_disabled, type="primary", use_container_width=True):
                     count_pipes = 0
                     count_fits = 0
                     for cut in st.session_state.saved_cuts:
@@ -1467,6 +1510,7 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
         if not df_log.empty and PDF_AVAILABLE:
             st.divider()
             st.markdown("#### Dokumentation (Abruf)")
+            # Im Archiv-Modus versuchen wir gespeicherte Metadaten zu laden oder nutzen Platzhalter
             meta_saved = st.session_state.get('last_handover_meta', {})
             pdf_data = Exporter.to_pdf_final_report(df_log, proj_name, meta_saved)
             st.download_button("📄 Fertigungsbescheinigung herunterladen", pdf_data, f"Fertigungsbescheinigung_{proj_name}.pdf", "application/pdf", type="primary")
@@ -1476,6 +1520,7 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
     st.info("Erstellung der Fertigungsbescheinigung für die Abnahme.")
     df_log = DatabaseRepository.get_logbook_by_project(active_pid)
     
+    # State-Initialisierung für Handover-Daten (damit sie nicht verloren gehen)
     if 'ho_order' not in st.session_state: st.session_state.ho_order = ""
     if 'ho_sys' not in st.session_state: st.session_state.ho_sys = ""
     if 'ho_rt' not in st.session_state: st.session_state.ho_rt = True
@@ -1487,6 +1532,7 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
         with st.form(key="handover_form"):
             st.markdown("#### 1. Projektdaten für Deckblatt")
             c1, c2 = st.columns(2)
+            # Wir nutzen st.session_state als value, damit es persistiert
             in_order = c1.text_input("Auftrags-Nr. / Ticket", value=st.session_state.ho_order)
             in_sys = c2.text_input("Anlagenteil / System", value=st.session_state.ho_sys)
             
@@ -1496,8 +1542,10 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
             check_dim = c_dim.checkbox("Maßhaltigkeit geprüft", value=st.session_state.ho_dim)
             check_iso = c_iso.checkbox("Isometrie (As-Built)", value=st.session_state.ho_iso)
             
+            # Dieser Button speichert die Eingaben in den State
             submit_update = st.form_submit_button("💾 Daten für PDF übernehmen", type="primary")
 
+    # Logik nach dem Klick: Daten in Session State sichern
     if submit_update:
         st.session_state.ho_order = in_order
         st.session_state.ho_sys = in_sys
@@ -1506,6 +1554,7 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
         st.session_state.ho_iso = check_iso
         st.toast("Daten übernommen! Vorschau aktualisiert.", icon="📄")
     
+    # Plausibilitäts-Check
     missing_apz = len(df_log[df_log['charge_apz'].astype(str).str.strip() == ''])
     missing_weld = len(df_log[df_log['schweisser'].astype(str).str.strip() == ''])
     ready = True
@@ -1518,6 +1567,7 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
     
     col_act, col_pdf = st.columns(2)
     
+    # Meta-Daten Wörterbuch bauen (aus dem SICHEREN Session State)
     meta_data = {
         "order_no": st.session_state.ho_order,
         "system_name": st.session_state.ho_sys,
@@ -1526,6 +1576,7 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
         "check_iso": st.session_state.ho_iso
     }
     
+    # Speichere Meta-Daten auch global für den Archiv-View später
     st.session_state.last_handover_meta = meta_data
 
     with col_act:
@@ -1544,8 +1595,10 @@ def render_closeout_tab(active_pid: int, proj_name: str, is_archived: int):
 
     with col_pdf:
         if not df_log.empty and PDF_AVAILABLE:
+            # PDF wird JETZT mit den Daten aus meta_data (Session State) gebaut
             pdf_data = Exporter.to_pdf_final_report(df_log, proj_name, meta_data)
             
+            # Visueller Check für den User
             st.caption(f"Vorschau Daten: Ticket '{meta_data['order_no']}' | System '{meta_data['system_name']}'")
             
             st.download_button(
