@@ -1,8 +1,0 @@
-streamlit
-pandas
-matplotlib
-gspread
-oauth2client
-openpyxl
-fpdf
-streamlit-aggrid
