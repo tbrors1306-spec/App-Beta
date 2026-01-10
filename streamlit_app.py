@@ -508,16 +508,16 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
 
     with geo_tabs[5]:  # ISO-Zeichnung
         st.markdown("#### 📐 ISO-Zeichenpapier")
-        st.caption("Zeichne Rohrleitungen auf isometrischem Raster - wie auf klassischem ISO-Papier")
+        st.caption("Freies Zeichnen für Rohrleitungs-Skizzen mit Maßen")
         
         # Import canvas (conditional)
         try:
             from streamlit_drawable_canvas import st_canvas
-            from modules.iso_grid import ISOGridGenerator
             CANVAS_AVAILABLE = True
         except (ImportError, ModuleNotFoundError):
             CANVAS_AVAILABLE = False
-            st.error("⚠️ Installation erforderlich: `pip install streamlit-drawable-canvas Pillow`")
+            st.error("⚠️ Installation erforderlich: `pip install streamlit-drawable-canvas`")
+            st.code("pip install streamlit-drawable-canvas", language="bash")
         
         if CANVAS_AVAILABLE:
             col_tools, col_canvas = st.columns([1, 3])
@@ -527,78 +527,131 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 
                 drawing_mode = st.selectbox(
                     "Modus",
-                    ("freedraw", "line", "rect", "circle", "transform", "polygon"),
+                    ("freedraw", "line", "rect", "circle", "transform"),
                     format_func=lambda x: {"freedraw": "✏️ Freihand", "line": "📏 Linie", 
                                            "rect": "⬜ Rechteck", "circle": "⭕ Kreis",
-                                           "transform": "↔️ Verschieben", "polygon": "🔷 Polygon"}[x]
+                                           "transform": "↔️ Verschieben"}[x],
+                    key="iso_mode"
                 )
                 
-                stroke_width = st.slider("Linienstärke", 1, 10, 2)
-                stroke_color = st.color_picker("Farbe", "#000000")
-                show_grid = st.checkbox("Isometrisches Raster anzeigen", value=True)
+                stroke_width = st.slider("Linienstärke", 1, 15, 3, key="iso_width")
+                stroke_color = st.color_picker("Farbe", "#000000", key="iso_color")
                 
                 st.divider()
+                st.markdown("**Maße hinzufügen**")
+                dimension_text = st.text_input("Maßtext (z.B. '500mm')", key="iso_dim_text", placeholder="z.B. 500mm")
+                if st.button("📝 Text platzieren", use_container_width=True, disabled=not dimension_text):
+                    st.info("Klicke auf den Canvas, um den Text zu platzieren")
+                
+                st.divider()
+                st.markdown("**Aktionen**")
                 
                 if st.button("🗑️ Zeichnung löschen", use_container_width=True):
                     st.session_state.iso_canvas_key = st.session_state.get('iso_canvas_key', 0) + 1
                     st.rerun()
                 
-                st.caption("**Tipp:** Nutze 'Linie' für gerade Rohre entlang des Rasters.")
+                st.divider()
+                st.caption("💡 **Tipps:**")
+                st.caption("• Nutze **Linie** für gerade Rohre")
+                st.caption("• Nutze **Freihand** für Bögen")
+                st.caption("• Gib Maße im Textfeld ein")
             
             with col_canvas:
-                # Generate grid background
+                st.markdown("**Zeichenfläche** 🧭")
+                
                 canvas_width = 900
                 canvas_height = 600
-                
-                if show_grid:
-                    bg_image = ISOGridGenerator.create_iso_grid(canvas_width, canvas_height, grid_size=30)
-                else:
-                    bg_image = None
                 
                 canvas_key = st.session_state.get('iso_canvas_key', 0)
                 
                 # Drawing canvas
                 canvas_result = st_canvas(
-                    fill_color="rgba(255, 165, 0, 0.3)",
+                    fill_color="rgba(255, 255, 255, 0)",
                     stroke_width=stroke_width,
                     stroke_color=stroke_color,
-                    background_image=bg_image,
+                    background_color="#ffffff",
                     update_streamlit=True,
                     height=canvas_height,
                     width=canvas_width,
                     drawing_mode=drawing_mode,
-                    point_display_radius=0,
+                    point_display_radius=3 if drawing_mode == "transform" else 0,
                     key=f"iso_canvas_{canvas_key}",
                 )
                 
+                # Compass Rose (Windrose) overlay
+                st.markdown("""
+                <div style="position: relative; margin-top: -620px; margin-left: 820px; width: 60px; height: 60px; 
+                            background: white; border: 2px solid #333; border-radius: 50%; 
+                            display: flex; align-items: center; justify-content: center; font-size: 10px; pointer-events: none;">
+                    <div style="text-align: center; line-height: 1.2;">
+                        <div style="font-weight: bold; font-size: 12px;">N</div>
+                        <div style="font-size: 8px; color: #666;">↑</div>
+                        <div style="display: flex; justify-content: space-between; margin: -5px -15px;">
+                            <span>W</span><span>O</span>
+                        </div>
+                        <div style="margin-top: -5px; font-size: 8px; color: #666;">↓</div>
+                        <div style="font-size: 10px;">S</div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+                
                 # Export button
                 if canvas_result.image_data is not None:
-                    from PIL import Image
+                    from PIL import Image, ImageDraw, ImageFont
                     import numpy as np
+                    from io import BytesIO
                     
-                    col_exp1, col_exp2 = st.columns(2)
+                    st.divider()
+                    col_exp1, col_exp2, col_exp3 = st.columns(3)
                     
                     with col_exp1:
-                        if st.button("📥 Als PNG herunterladen", use_container_width=True):
-                            # Convert to PIL image
-                            img = Image.fromarray(canvas_result.image_data.astype('uint8'), 'RGBA')
-                            
-                            # Save to buffer
-                            from io import BytesIO
-                            buf = BytesIO()
-                            img.save(buf, format="PNG")
-                            buf.seek(0)
-                            
-                            st.download_button(
-                                "⬇️ Download PNG",
-                                buf,
-                                file_name=f"iso_zeichnung_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
-                                mime="image/png",
-                                use_container_width=True
-                            )
+                        # Convert to PIL image
+                        img = Image.fromarray(canvas_result.image_data.astype('uint8'), 'RGBA')
+                        
+                        # Add compass rose to image
+                        draw = ImageDraw.Draw(img)
+                        compass_x, compass_y = 820, 20
+                        compass_r = 30
+                        
+                        # Compass circle
+                        draw.ellipse([compass_x, compass_y, compass_x+60, compass_y+60], 
+                                    outline="black", width=2, fill="white")
+                        
+                        # Compass directions
+                        try:
+                            font = ImageFont.truetype("arial.ttf", 12)
+                            font_small = ImageFont.truetype("arial.ttf", 10)
+                        except:
+                            font = ImageFont.load_default()
+                            font_small = font
+                        
+                        draw.text((compass_x+26, compass_y+5), "N", fill="black", font=font)
+                        draw.text((compass_x+26, compass_y+45), "S", fill="black", font=font_small)
+                        draw.text((compass_x+5, compass_y+23), "W", fill="black", font=font_small)
+                        draw.text((compass_x+48, compass_y+23), "O", fill="black", font=font_small)
+                        
+                        # Save to buffer
+                        buf = BytesIO()
+                        img.save(buf, format="PNG")
+                        buf.seek(0)
+                        
+                        st.download_button(
+                            "📥 Als PNG speichern",
+                            buf,
+                            file_name=f"iso_zeichnung_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
+                            mime="image/png",
+                            use_container_width=True
+                        )
                     
                     with col_exp2:
-                        st.caption("💡 Speichere deine Zeichnung als Bild")
+                        st.caption("💾 Download inkl. Windrose")
+                    
+                    with col_exp3:
+                        st.caption(f"Canvas: {canvas_width}x{canvas_height}px")
+                
+                # Instructions for adding dimensions
+                if dimension_text:
+                    st.info(f"📝 Nächster Schritt: Nutze 'Transform' Modus und platziere deinen Text '{dimension_text}' manuell auf der Zeichnung")
 
 def render_mto_tab(active_pid: int, proj_name: str):
     st.markdown('<div class="machine-header-doc">📦 MATERIAL MANAGER</div>', unsafe_allow_html=True)
