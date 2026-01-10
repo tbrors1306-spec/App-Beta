@@ -562,14 +562,24 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 canvas_width = 900
                 canvas_height = 600
                 
+                # Show/hide grid option
+                show_grid = st.checkbox("ISO-Dreiecksgitter anzeigen", value=True, key="iso_show_grid")
+                
+                # Generate ISO triangle grid background
+                if show_grid:
+                    from modules.iso_grid import ISOGridGenerator
+                    bg_img = ISOGridGenerator.create_iso_triangle_grid(canvas_width, canvas_height, grid_size=25)
+                else:
+                    bg_img = None
+                
                 canvas_key = st.session_state.get('iso_canvas_key', 0)
                 
-                # Drawing canvas
+                # Drawing canvas with ISO grid
                 canvas_result = st_canvas(
                     fill_color="rgba(255, 255, 255, 0)",
                     stroke_width=stroke_width,
                     stroke_color=stroke_color,
-                    background_color="#ffffff",
+                    background_image=bg_img,
                     update_streamlit=True,
                     height=canvas_height,
                     width=canvas_width,
@@ -578,19 +588,42 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                     key=f"iso_canvas_{canvas_key}",
                 )
                 
-                # Compass Rose (Windrose) overlay
+                # ISO Windrose (6 directions: o,r,v,u,l,h)
                 st.markdown("""
-                <div style="position: relative; margin-top: -620px; margin-left: 820px; width: 60px; height: 60px; 
-                            background: white; border: 2px solid #333; border-radius: 50%; 
-                            display: flex; align-items: center; justify-content: center; font-size: 10px; pointer-events: none;">
-                    <div style="text-align: center; line-height: 1.2;">
-                        <div style="font-weight: bold; font-size: 12px;">N</div>
-                        <div style="font-size: 8px; color: #666;">↑</div>
-                        <div style="display: flex; justify-content: space-between; margin: -5px -15px;">
-                            <span>W</span><span>O</span>
-                        </div>
-                        <div style="margin-top: -5px; font-size: 8px; color: #666;">↓</div>
-                        <div style="font-size: 10px;">S</div>
+                <div style="position: relative; margin-top: -620px; margin-left: 800px; width: 80px; height: 80px; 
+                            background: white; border: 2px solid #666; 
+                            display: flex; align-items: center; justify-content: center; pointer-events: none;">
+                    <div style="position: relative; width: 60px; height: 60px;">
+                        <!-- Center dot -->
+                        <div style="position: absolute; left: 28px; top: 28px; width: 4px; height: 4px; background: black; border-radius: 50%;"></div>
+                        
+                        <!-- o (oben) -->
+                        <div style="position: absolute; left: 26px; top: 2px; font-weight: bold; font-size: 14px;">o</div>
+                        
+                        <!-- r (rechts oben) -->
+                        <div style="position: absolute; right: 2px; top: 12px; font-weight: bold; font-size: 14px;">r</div>
+                        
+                        <!-- v (rechts unten) -->
+                        <div style="position: absolute; right: 2px; bottom: 12px; font-weight: bold; font-size: 14px;">v</div>
+                        
+                        <!-- u (unten) -->
+                        <div style="position: absolute; left: 26px; bottom: 2px; font-weight: bold; font-size: 14px;">u</div>
+                        
+                        <!-- l (links unten) -->
+                        <div style="position: absolute; left: 2px; bottom: 12px; font-weight: bold; font-size: 14px;">l</div>
+                        
+                        <!-- h (links oben) -->
+                        <div style="position: absolute; left: 2px; top: 12px; font-weight: bold; font-size: 14px;">h</div>
+                        
+                        <!-- Lines from center to directions -->
+                        <svg style="position: absolute; top: 0; left: 0; width: 60px; height: 60px;">
+                            <line x1="30" y1="30" x2="30" y2="8" stroke="black" stroke-width="1.5"/>
+                            <line x1="30" y1="30" x2="52" y2="18" stroke="black" stroke-width="1.5"/>
+                            <line x1="30" y1="30" x2="52" y2="42" stroke="black" stroke-width="1.5"/>
+                            <line x1="30" y1="30" x2="30" y2="52" stroke="black" stroke-width="1.5"/>
+                            <line x1="30" y1="30" x2="8" y2="42" stroke="black" stroke-width="1.5"/>
+                            <line x1="30" y1="30" x2="8" y2="18" stroke="black" stroke-width="1.5"/>
+                        </svg>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
