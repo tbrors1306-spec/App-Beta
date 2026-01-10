@@ -110,7 +110,6 @@ class PipeCalculator:
         
         segments = []
         total_travel = 0
-        total_run = 0
         
         for i in range(len(waypoints) - 1):
             start = waypoints[i]
@@ -119,7 +118,14 @@ class PipeCalculator:
             delta_roll = end["roll"] - start["roll"]
             delta_set = end["set"] - start["set"]
             
-            result = self.calculate_rolling_offset(0, delta_roll, delta_set)
+            # Calculate this segment using simple math (no dn needed for basic offset)
+            diag_base = (delta_roll**2 + delta_set**2)**0.5
+            
+            # Determine angle
+            if diag_base != 0:
+                angle = abs(delta_roll / diag_base) * 90 if abs(delta_roll) > abs(delta_set) else abs(delta_set / diag_base) * 90
+            else:
+                angle = 0
             
             segments.append({
                 "segment": i + 1,
@@ -127,11 +133,11 @@ class PipeCalculator:
                 "to": f"P{i+2}",
                 "roll": delta_roll,
                 "set": delta_set,
-                "travel": result["travel"],
-                "angle": result["angle_calc"]
+                "travel": diag_base,
+                "angle": angle
             })
             
-            total_travel += result["travel"]
+            total_travel += diag_base
         
         return {
             "segments": segments,
