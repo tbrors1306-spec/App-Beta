@@ -551,8 +551,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 canvas_height = 600
                 
                 if show_grid:
-                    grid_img = ISOGridGenerator.create_iso_grid(canvas_width, canvas_height, grid_size=30)
-                    bg_image = ISOGridGenerator.image_to_base64(grid_img)
+                    bg_image = ISOGridGenerator.create_iso_grid(canvas_width, canvas_height, grid_size=30)
                 else:
                     bg_image = None
                 
@@ -563,7 +562,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                     fill_color="rgba(255, 165, 0, 0.3)",
                     stroke_width=stroke_width,
                     stroke_color=stroke_color,
-                    background_image=bg_image if show_grid else None,
+                    background_image=bg_image,
                     update_streamlit=True,
                     height=canvas_height,
                     width=canvas_width,
