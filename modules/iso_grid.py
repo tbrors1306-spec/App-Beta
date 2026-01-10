@@ -6,61 +6,64 @@ import numpy as np
 from PIL import Image, ImageDraw
 import base64
 from io import BytesIO
+import math
 
 class ISOGridGenerator:
     """Generates isometric grid backgrounds for technical drawings."""
     
     @staticmethod
-    def create_iso_grid(width=1200, height=800, grid_size=20, line_color=(220, 220, 220), bg_color=(255, 255, 255)):
+    def create_iso_triangle_grid(width=1200, height=800, grid_size=20, line_color=(200, 230, 230), bg_color=(255, 255, 255)):
         """
-        Creates isometric grid background image.
+        Creates proper isometric triangle grid (like real ISO paper).
         
         Args:
-            width: Canvas width in pixels
-            height: Canvas height in pixels
+            width: Canvas width
+            height: Canvas height
             grid_size: Distance between grid points
-            line_color: RGB tuple for grid lines
-            bg_color: RGB tuple for background
-            
+            line_color: RGB for grid lines (light cyan like ISO paper)
+            bg_color: RGB for background  
         Returns:
-            PIL Image object
+            PIL Image
         """
-        # Create blank image
         img = Image.new('RGB', (width, height), bg_color)
         draw = ImageDraw.Draw(img)
         
-        # Draw vertical lines (for reference)
-        for x in range(0, width, grid_size):
-            draw.line([(x, 0), (x, height)], fill=line_color, width=1)
+        # Isometric triangle grid parameters
+        # 30° angles, equilateral triangles
+        spacing = grid_size
+        h_spacing = spacing
+        v_spacing = spacing * math.sin(math.radians(60))  # Height of equilateral triangle
         
         # Draw horizontal lines
-        for y in range(0, height, grid_size):
+        y = 0
+        while y < height + v_spacing:
             draw.line([(0, y), (width, y)], fill=line_color, width=1)
+            y += v_spacing
         
-        # Draw 30° isometric lines (left-to-right, going up)
-        # tan(30°) = 0.577
-        angle_30_slope = 0.577
-        
-        # Lines starting from left edge, going right-up
-        for y_start in range(0, height + width, grid_size):
-            x1, y1 = 0, y_start
-            x2 = width
-            y2 = y_start - int(width * angle_30_slope)
-            if y2 < -width:
-                continue
+        # Draw left-slanting lines (120°)
+        x_start = -height
+        while x_start < width:
+            x1, y1 = x_start, 0
+            x2 = x_start + height * math.tan(math.radians(30))
+            y2 = height
             draw.line([(x1, y1), (x2, y2)], fill=line_color, width=1)
+            x_start += h_spacing
         
-        # Draw 150° isometric lines (left-to-right, going down)
-        # This is mirror of 30°
-        for y_start in range(-width, height, grid_size):
-            x1, y1 = 0, y_start
-            x2 = width
-            y2 = y_start + int(width * angle_30_slope)
-            if y2 > height + width:
-                continue
+        # Draw right-slanting lines (60°)
+        x_start = 0
+        while x_start < width + height:
+            x1, y1 = x_start, 0
+            x2 = x_start - height * math.tan(math.radians(30))
+            y2 = height
             draw.line([(x1, y1), (x2, y2)], fill=line_color, width=1)
+            x_start += h_spacing
         
         return img
+    
+    @staticmethod
+    def create_iso_grid(width=1200, height=800, grid_size=20, line_color=(220, 220, 220), bg_color=(255, 255, 255)):
+        """Legacy method - redirects to triangle grid"""
+        return ISOGridGenerator.create_iso_triangle_grid(width, height, grid_size, line_color, bg_color)
     
     @staticmethod
     def image_to_base64(img):
