@@ -558,7 +558,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 
                 canvas_key = st.session_state.get('iso_canvas_key', 0)
                 
-                # Generate ISO grid
+                # Generate ISO grid for overlay
                 from modules.iso_grid import ISOGridGenerator
                 import base64
                 from io import BytesIO
@@ -569,21 +569,12 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 buf.seek(0)
                 grid_b64 = base64.b64encode(buf.read()).decode()
                 
-                # Create container with grid background and canvas overlay
-                container_html = f"""
-                <div style="position: relative; width: {canvas_width}px; height: {canvas_height}px; margin-bottom: 20px;">
-                    <img src="data:image/png;base64,{grid_b64}" 
-                         style="position: absolute; top: 0; left: 0; width: {canvas_width}px; height: {canvas_height}px; z-index: 1; pointer-events: none;">
-                    <div id="canvas-wrapper" style="position: absolute; top: 0; left: 0; z-index: 2;">
-                """
-                st.markdown(container_html, unsafe_allow_html=True)
-                
-                # Drawing canvas with transparent background
+                # 1. First render the canvas (white background)
                 canvas_result = st_canvas(
                     fill_color="rgba(255, 255, 255, 0)",
                     stroke_width=stroke_width,
                     stroke_color=stroke_color,
-                    background_color="rgba(0, 0, 0, 0)",  # Fully transparent
+                    background_color="#ffffff",
                     update_streamlit=True,
                     height=canvas_height,
                     width=canvas_width,
@@ -592,7 +583,19 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                     key=f"iso_canvas_{canvas_key}",
                 )
                 
-                st.markdown("</div></div>", unsafe_allow_html=True)
+                # 2. Then overlay grid image AFTER canvas using negative margin
+                st.markdown(f"""
+                <img src="data:image/png;base64,{grid_b64}" 
+                     style="display: block; 
+                            margin-top: -{canvas_height + 10}px; 
+                            margin-left: 0px;
+                            width: {canvas_width}px; 
+                            height: {canvas_height}px; 
+                            opacity: 0.4;
+                            pointer-events: none; 
+                            position: relative; 
+                            z-index: 999;">
+                """, unsafe_allow_html=True)
                 
                 # ISO Windrose (6 directions: o,r,v,u,l,h)
                 st.markdown("""
