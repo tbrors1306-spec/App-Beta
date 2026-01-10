@@ -4,7 +4,6 @@ import json
 import logging
 import html
 import time
-from io import BytesIO
 from dataclasses import asdict
 from datetime import datetime
 
@@ -13,7 +12,6 @@ from modules.models import FittingItem, SavedCut
 from modules.calculations import PipeCalculator, MaterialManager, HandbookCalculator
 from modules.utils import Visualizer, Exporter, PDF_AVAILABLE
 from modules.optimization import CuttingOptimizer, CutRequest
-from modules.isometric import IsometricDrawer
 from modules.ui import init_app_state, render_smart_input, render_sidebar_projects
 
 # Logging setup
@@ -423,119 +421,8 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                      fig_static = Visualizer.plot_rolling_offset_3d_room(res['roll_val'], 0, res['set_val'])
                      st.pyplot(fig_static, use_container_width=False)
                 with st.expander("Verdrehung (Wasserwaage)"):
-                    fig_gauge = Visualizer.plot_rotation_gauge(res['roll_val'], res['set_val'], res['rot_angle'])
-                    st.pyplot(fig_gauge, use_container_width=False)
-
-        # NEW: Multi-Level Rolling Offset Sub-Section
-        st.divider()
-        st.markdown("#### 🔗 Multi-Level Rolling Offset (Kette)")
-        st.caption("Berechne verkettete Offsets durch mehrere Wegpunkte (A→B→C→D)")
-        
-        if 'ml_waypoints' not in st.session_state:
-            st.session_state.ml_waypoints = [{"roll": 0.0, "set": 0.0}, {"roll": 400.0, "set": 300.0}]
-        
-        col_wp, col_res = st.columns([1, 1.5])
-        
-        with col_wp:
-            st.markdown("**Wegpunkte**")
-            for i, wp in enumerate(st.session_state.ml_waypoints):
-                with st.container(border=True):
-                    wp_col1, wp_col2, wp_col3 = st.columns([2, 3, 3])
-                    wp_col1.markdown(f"**P{i+1}**")
-                    new_roll = wp_col2.number_input(f"Roll (Seite)", value=wp["roll"], step=10.0, key=f"ml_roll_{i}")
-                    new_set = wp_col3.number_input(f"Set (Höhe)", value=wp["set"], step=10.0, key=f"ml_set_{i}")
-                    st.session_state.ml_waypoints[i] = {"roll": new_roll, "set": new_set}
-            
-            ml_col1, ml_col2 = st.columns(2)
-            if ml_col1.button("➕ Wegpunkt", use_container_width=True):
-                last = st.session_state.ml_waypoints[-1]
-                st.session_state.ml_waypoints.append({"roll": last["roll"] + 200, "set": last["set"] + 100})
-                st.rerun()
-            
-            if ml_col2.button("➖ Entfernen", use_container_width=True, disabled=len(st.session_state.ml_waypoints) <= 2):
-                st.session_state.ml_waypoints.pop()
-                st.rerun()
-            
-            if st.button("🚀 Kette berechnen", type="primary", use_container_width=True):
-                result = calc.calculate_multi_level_offset(st.session_state.ml_waypoints)
-                st.session_state.ml_result = result
-        
-        with col_res:
-            if 'ml_result' in st.session_state:
-                result = st.session_state.ml_result
-                if "error" in result:
-                    st.error(result["error"])
-                else:
-                    st.markdown("**Ergebnis**")
-                    r1, r2 = st.columns(2)
-                    r1.metric("Gesamt-Länge", f"{result['total_travel']:.1f} mm")
-                    r2.metric("Segmente", result['num_segments'])
-                    
-                    st.divider()
-                    st.markdown("**Segment-Details:**")
-                    for seg in result["segments"]:
-                        with st.container(border=True):
-                            sc1, sc2, sc3 = st.columns(3)
-                            sc1.caption(f"**{seg['from']} → {seg['to']}**")
-                            sc2.caption(f"Travel: {seg['travel']:.1f}mm")
-                            sc3.caption(f"∠ {seg['angle']:.1f}°")
-
-        # NEW: Isometric Drawing Generator
-        st.divider()
-        st.markdown("#### 📐 ISO-Zeichnung Generator")
-        st.caption("Generiert automatisch isometrische Zeichnungen aus Wegpunkten")
-        
-        iso_col1, iso_col2 = st.columns([1, 1.5])
-        
-        with iso_col1:
-            st.markdown("**Quelle wählen:**")
-            use_multi_level = st.checkbox("Multi-Level Wegpunkte nutzen", value=True)
-            
-            if use_multi_level and 'ml_waypoints' in st.session_state:
-                # Convert ml_waypoints format to 3D (assume y=cumulative for now)
-                waypoints_3d = []
-                cumulative_y = 0
-                for i, wp in enumerate(st.session_state.ml_waypoints):
-                    waypoints_3d.append({
-                        "x": wp["roll"],
-                        "y": cumulative_y,
-                        "z": wp["set"]
-                    })
-                    cumulative_y += 500  # Default spacing
-                    
-                st.info(f"{len(waypoints_3d)} Wegpunkte aus Multi-Level")
-            else:
-                st.caption("Manuelle Eingabe (vereinfacht):")
-                waypoints_3d = [
-                    {"x": 0, "y": 0, "z": 0},
-                    {"x": 400, "y": 500, "z": 300},
-                    {"x": 200, "y": 1000, "z": 600}
-                ]
-            
-            pipe_dn_iso = st.selectbox("Rohr-DN (Darstellung)", [50, 100, 150, 200], index=1)
-            show_dims = st.checkbox("Maße anzeigen", value=True)
-            
-            if st.button("🎨 ISO-Zeichnung erstellen", type="primary", use_container_width=True):
-                fig_iso = IsometricDrawer.draw_iso_route(waypoints_3d, pipe_dn_iso, show_dims)
-                st.session_state.iso_figure = fig_iso
-                st.toast("✅ Zeichnung erstellt!")
-        
-        with iso_col2:
-            if 'iso_figure' in st.session_state and st.session_state.iso_figure:
-                st.markdown("**Ergebnis:**")
-                st.pyplot(st.session_state.iso_figure, use_container_width=True)
-                
-                # Export button
-                buf = BytesIO()
-                st.session_state.iso_figure.savefig(buf, format='png', dpi=150, bbox_inches='tight')
-                buf.seek(0)
-                st.download_button(
-                    "📥 Als PNG Download",
-                    buf,
-                    file_name=f"iso_zeichnung_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
-                    mime="image/png",
-                    use_container_width=True
-                )
+                     fig_gauge = Visualizer.plot_rotation_gauge(res['roll_val'], res['set_val'], res['rot_angle'])
+                     st.pyplot(fig_gauge, use_container_width=False)
 
     with geo_tabs[2]:
         with st.container(border=True):
