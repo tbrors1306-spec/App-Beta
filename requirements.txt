@@ -1,9 +1,0 @@
-streamlit
-pandas
-matplotlib
-gspread
-oauth2client
-openpyxl
-fpdf
-streamlit-aggrid
-plotly>=5.0.0
