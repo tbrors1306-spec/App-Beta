@@ -672,10 +672,6 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                     
                     with col_exp3:
                         st.caption(f"Canvas: {canvas_width}x{canvas_height}px")
-                
-                # Instructions for adding dimensions
-                if dimension_text:
-                    st.info(f"📝 Nächster Schritt: Nutze 'Transform' Modus und platziere deinen Text '{dimension_text}' manuell auf der Zeichnung")
 
 def render_mto_tab(active_pid: int, proj_name: str):
     st.markdown('<div class="machine-header-doc">📦 MATERIAL MANAGER</div>', unsafe_allow_html=True)
