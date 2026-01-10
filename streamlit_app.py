@@ -538,12 +538,6 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 stroke_color = st.color_picker("Farbe", "#000000", key="iso_color")
                 
                 st.divider()
-                st.markdown("**Maße hinzufügen**")
-                dimension_text = st.text_input("Maßtext (z.B. '500mm')", key="iso_dim_text", placeholder="z.B. 500mm")
-                if st.button("📝 Text platzieren", use_container_width=True, disabled=not dimension_text):
-                    st.info("Klicke auf den Canvas, um den Text zu platzieren")
-                
-                st.divider()
                 st.markdown("**Aktionen**")
                 
                 if st.button("🗑️ Zeichnung löschen", use_container_width=True):
@@ -552,34 +546,31 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 
                 st.divider()
                 st.caption("💡 **Tipps:**")
-                st.caption("• Nutze **Linie** für gerade Rohre")
-                st.caption("• Nutze **Freihand** für Bögen")
-                st.caption("• Gib Maße im Textfeld ein")
+                st.caption("• **Linie** für gerade Rohre")
+                st.caption("• **Freihand** für Bögen und Maße")
+                st.caption("• Orientiere dich am ISO-Gitter")
             
             with col_canvas:
-                st.markdown("**Zeichenfläche** 🧭")
+                st.markdown("**Zeichenfläche mit ISO-Gitter** 🧭")
                 
                 canvas_width = 900
                 canvas_height = 600
                 
-                # Show/hide grid option
-                show_grid = st.checkbox("ISO-Dreiecksgitter anzeigen", value=True, key="iso_show_grid")
-                
-                # Generate ISO triangle grid background
-                if show_grid:
-                    from modules.iso_grid import ISOGridGenerator
-                    bg_img = ISOGridGenerator.create_iso_triangle_grid(canvas_width, canvas_height, grid_size=25)
-                else:
-                    bg_img = None
-                
                 canvas_key = st.session_state.get('iso_canvas_key', 0)
                 
-                # Drawing canvas with ISO grid
+                # Display ISO grid as reference below canvas
+                st.caption("⬇️ ISO-Dreiecksgitter als Referenz:")
+                from modules.iso_grid import ISOGridGenerator
+                grid_img = ISOGridGenerator.create_iso_triangle_grid(canvas_width, canvas_height, grid_size=25)
+                st.image(grid_img, use_container_width=False, width=canvas_width)
+                
+                st.caption("⬆️ Zeichne hier:")
+                # Drawing canvas WITHOUT background (to avoid errors)
                 canvas_result = st_canvas(
                     fill_color="rgba(255, 255, 255, 0)",
                     stroke_width=stroke_width,
                     stroke_color=stroke_color,
-                    background_image=bg_img,
+                    background_color="#ffffff",
                     update_streamlit=True,
                     height=canvas_height,
                     width=canvas_width,
