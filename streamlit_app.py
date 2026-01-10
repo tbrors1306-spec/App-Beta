@@ -551,26 +551,48 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 st.caption("• Orientiere dich am ISO-Gitter")
             
             with col_canvas:
-                st.markdown("**Zeichenfläche mit ISO-Gitter** 🧭")
+                st.markdown("**Zeichenfläche mit ISO-Papier** 🧭")
                 
                 canvas_width = 900
                 canvas_height = 600
                 
                 canvas_key = st.session_state.get('iso_canvas_key', 0)
                 
-                # Display ISO grid as reference below canvas
-                st.caption("⬇️ ISO-Dreiecksgitter als Referenz:")
+                # Generate ISO grid as base64 for CSS background
                 from modules.iso_grid import ISOGridGenerator
-                grid_img = ISOGridGenerator.create_iso_triangle_grid(canvas_width, canvas_height, grid_size=25)
-                st.image(grid_img, use_container_width=False, width=canvas_width)
+                import base64
+                from io import BytesIO
                 
-                st.caption("⬆️ Zeichne hier:")
-                # Drawing canvas WITHOUT background (to avoid errors)
+                grid_img = ISOGridGenerator.create_iso_triangle_grid(canvas_width, canvas_height, grid_size=25)
+                buf = BytesIO()
+                grid_img.save(buf, format='PNG')
+                buf.seek(0)
+                grid_b64 = base64.b64encode(buf.read()).decode()
+                
+                # Container with ISO grid background via CSS
+                st.markdown(f"""
+                <style>
+                .iso-canvas-container {{
+                    background-image: url(data:image/png;base64,{grid_b64});
+                    background-size: {canvas_width}px {canvas_height}px;
+                    background-repeat: no-repeat;
+                    width: {canvas_width}px;
+                    height: {canvas_height}px;
+                    position: relative;
+                }}
+                .iso-canvas-container canvas {{
+                    background: transparent !important;
+                }}
+                </style>
+                <div class="iso-canvas-container">
+                """, unsafe_allow_html=True)
+                
+                # Drawing canvas with transparent background
                 canvas_result = st_canvas(
                     fill_color="rgba(255, 255, 255, 0)",
                     stroke_width=stroke_width,
                     stroke_color=stroke_color,
-                    background_color="#ffffff",
+                    background_color="rgba(255, 255, 255, 0.01)",  # Nearly transparent
                     update_streamlit=True,
                     height=canvas_height,
                     width=canvas_width,
@@ -578,6 +600,8 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                     point_display_radius=3 if drawing_mode == "transform" else 0,
                     key=f"iso_canvas_{canvas_key}",
                 )
+                
+                st.markdown("</div>", unsafe_allow_html=True)
                 
                 # ISO Windrose (6 directions: o,r,v,u,l,h)
                 st.markdown("""
