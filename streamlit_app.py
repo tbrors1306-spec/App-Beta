@@ -12,6 +12,7 @@ from modules.models import FittingItem, SavedCut
 from modules.calculations import PipeCalculator, MaterialManager, HandbookCalculator
 from modules.utils import Visualizer, Exporter, PDF_AVAILABLE
 from modules.optimization import CuttingOptimizer, CutRequest
+from modules.isometric import IsometricDrawer
 from modules.ui import init_app_state, render_smart_input, render_sidebar_projects
 
 # Logging setup
@@ -438,10 +439,10 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
             st.markdown("**Wegpunkte**")
             for i, wp in enumerate(st.session_state.ml_waypoints):
                 with st.container(border=True):
-                    wp_col1, wp_col2, wp_col3 = st.columns([3, 3, 1])
+                    wp_col1, wp_col2, wp_col3 = st.columns([2, 3, 3])
                     wp_col1.markdown(f"**P{i+1}**")
-                    new_roll = wp_col2.number_input(f"Roll", value=wp["roll"], step=10.0, key=f"ml_roll_{i}", label_visibility="collapsed")
-                    new_set = wp_col3.number_input(f"Set", value=wp["set"], step=10.0, key=f"ml_set_{i}", label_visibility="collapsed")
+                    new_roll = wp_col2.number_input(f"Roll (Seite)", value=wp["roll"], step=10.0, key=f"ml_roll_{i}")
+                    new_set = wp_col3.number_input(f"Set (Höhe)", value=wp["set"], step=10.0, key=f"ml_set_{i}")
                     st.session_state.ml_waypoints[i] = {"roll": new_roll, "set": new_set}
             
             ml_col1, ml_col2 = st.columns(2)
@@ -477,6 +478,63 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                             sc1.caption(f"**{seg['from']} → {seg['to']}**")
                             sc2.caption(f"Travel: {seg['travel']:.1f}mm")
                             sc3.caption(f"∠ {seg['angle']:.1f}°")
+
+        # NEW: Isometric Drawing Generator
+        st.divider()
+        st.markdown("#### 📐 ISO-Zeichnung Generator")
+        st.caption("Generiert automatisch isometrische Zeichnungen aus Wegpunkten")
+        
+        iso_col1, iso_col2 = st.columns([1, 1.5])
+        
+        with iso_col1:
+            st.markdown("**Quelle wählen:**")
+            use_multi_level = st.checkbox("Multi-Level Wegpunkte nutzen", value=True)
+            
+            if use_multi_level and 'ml_waypoints' in st.session_state:
+                # Convert ml_waypoints format to 3D (assume y=cumulative for now)
+                waypoints_3d = []
+                cumulative_y = 0
+                for i, wp in enumerate(st.session_state.ml_waypoints):
+                    waypoints_3d.append({
+                        "x": wp["roll"],
+                        "y": cumulative_y,
+                        "z": wp["set"]
+                    })
+                    cumulative_y += 500  # Default spacing
+                    
+                st.info(f"{len(waypoints_3d)} Wegpunkte aus Multi-Level")
+            else:
+                st.caption("Manuelle Eingabe (vereinfacht):")
+                waypoints_3d = [
+                    {"x": 0, "y": 0, "z": 0},
+                    {"x": 400, "y": 500, "z": 300},
+                    {"x": 200, "y": 1000, "z": 600}
+                ]
+            
+            pipe_dn_iso = st.selectbox("Rohr-DN (Darstellung)", [50, 100, 150, 200], index=1)
+            show_dims = st.checkbox("Maße anzeigen", value=True)
+            
+            if st.button("🎨 ISO-Zeichnung erstellen", type="primary", use_container_width=True):
+                fig_iso = IsometricDrawer.draw_iso_route(waypoints_3d, pipe_dn_iso, show_dims)
+                st.session_state.iso_figure = fig_iso
+                st.toast("✅ Zeichnung erstellt!")
+        
+        with iso_col2:
+            if 'iso_figure' in st.session_state and st.session_state.iso_figure:
+                st.markdown("**Ergebnis:**")
+                st.pyplot(st.session_state.iso_figure, use_container_width=True)
+                
+                # Export button
+                buf = BytesIO()
+                st.session_state.iso_figure.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+                buf.seek(0)
+                st.download_button(
+                    "📥 Als PNG Download",
+                    buf,
+                    file_name=f"iso_zeichnung_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
+                    mime="image/png",
+                    use_container_width=True
+                )
 
     with geo_tabs[2]:
         with st.container(border=True):
