@@ -4,6 +4,7 @@ import json
 import logging
 import html
 import time
+from io import BytesIO
 from dataclasses import asdict
 from datetime import datetime
 
