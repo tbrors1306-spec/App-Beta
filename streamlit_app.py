@@ -506,6 +506,101 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 if fig: st.pyplot(fig)
                 else: st.error("⚠️ Geometrie ungültig")
 
+    with geo_tabs[5]:  # ISO-Zeichnung
+        st.markdown("#### 📐 ISO-Zeichenpapier")
+        st.caption("Zeichne Rohrleitungen auf isometrischem Raster - wie auf klassischem ISO-Papier")
+        
+        # Import canvas (conditional)
+        try:
+            from streamlit_drawable_canvas import st_canvas
+            from modules.iso_grid import ISOGridGenerator
+            CANVAS_AVAILABLE = True
+        except (ImportError, ModuleNotFoundError):
+            CANVAS_AVAILABLE = False
+            st.error("⚠️ Installation erforderlich: `pip install streamlit-drawable-canvas Pillow`")
+        
+        if CANVAS_AVAILABLE:
+            col_tools, col_canvas = st.columns([1, 3])
+            
+            with col_tools:
+                st.markdown("**Zeichen-Tools**")
+                
+                drawing_mode = st.selectbox(
+                    "Modus",
+                    ("freedraw", "line", "rect", "circle", "transform", "polygon"),
+                    format_func=lambda x: {"freedraw": "✏️ Freihand", "line": "📏 Linie", 
+                                           "rect": "⬜ Rechteck", "circle": "⭕ Kreis",
+                                           "transform": "↔️ Verschieben", "polygon": "🔷 Polygon"}[x]
+                )
+                
+                stroke_width = st.slider("Linienstärke", 1, 10, 2)
+                stroke_color = st.color_picker("Farbe", "#000000")
+                show_grid = st.checkbox("Isometrisches Raster anzeigen", value=True)
+                
+                st.divider()
+                
+                if st.button("🗑️ Zeichnung löschen", use_container_width=True):
+                    st.session_state.iso_canvas_key = st.session_state.get('iso_canvas_key', 0) + 1
+                    st.rerun()
+                
+                st.caption("**Tipp:** Nutze 'Linie' für gerade Rohre entlang des Rasters.")
+            
+            with col_canvas:
+                # Generate grid background
+                canvas_width = 900
+                canvas_height = 600
+                
+                if show_grid:
+                    grid_img = ISOGridGenerator.create_iso_grid(canvas_width, canvas_height, grid_size=30)
+                    bg_image = ISOGridGenerator.image_to_base64(grid_img)
+                else:
+                    bg_image = None
+                
+                canvas_key = st.session_state.get('iso_canvas_key', 0)
+                
+                # Drawing canvas
+                canvas_result = st_canvas(
+                    fill_color="rgba(255, 165, 0, 0.3)",
+                    stroke_width=stroke_width,
+                    stroke_color=stroke_color,
+                    background_image=bg_image if show_grid else None,
+                    update_streamlit=True,
+                    height=canvas_height,
+                    width=canvas_width,
+                    drawing_mode=drawing_mode,
+                    point_display_radius=0,
+                    key=f"iso_canvas_{canvas_key}",
+                )
+                
+                # Export button
+                if canvas_result.image_data is not None:
+                    from PIL import Image
+                    import numpy as np
+                    
+                    col_exp1, col_exp2 = st.columns(2)
+                    
+                    with col_exp1:
+                        if st.button("📥 Als PNG herunterladen", use_container_width=True):
+                            # Convert to PIL image
+                            img = Image.fromarray(canvas_result.image_data.astype('uint8'), 'RGBA')
+                            
+                            # Save to buffer
+                            from io import BytesIO
+                            buf = BytesIO()
+                            img.save(buf, format="PNG")
+                            buf.seek(0)
+                            
+                            st.download_button(
+                                "⬇️ Download PNG",
+                                buf,
+                                file_name=f"iso_zeichnung_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png",
+                                mime="image/png",
+                                use_container_width=True
+                            )
+                    
+                    with col_exp2:
+                        st.caption("💡 Speichere deine Zeichnung als Bild")
+
 def render_mto_tab(active_pid: int, proj_name: str):
     st.markdown('<div class="machine-header-doc">📦 MATERIAL MANAGER</div>', unsafe_allow_html=True)
     st.markdown(f"<div class='project-tag'>📍 PROJEKT: {html.escape(proj_name)}</div>", unsafe_allow_html=True)
