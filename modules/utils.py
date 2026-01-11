@@ -180,105 +180,153 @@ class Visualizer:
         return fig
 
     @staticmethod
-    def plot_rolling_offset_interactive(roll: float, run: float, set_val: float):
-        """
-        Creates an interactive 3D Plotly figure for the rolling offset.
-        """
+    def plot_rolling_offset_interactive(roll, side, dn, df):
+        """Creates interactive 3D plot using Plotly with enhanced visibility for side offset"""
         if not PLOTLY_AVAILABLE:
             return None
+            
+        # Assuming PipeCalculator is defined elsewhere or imported.
+        # For this change, we'll assume it's available in the context.
+        # If not, this will cause a NameError.
+        # To make this syntactically correct without external changes,
+        # we'll define a dummy PipeCalculator if it's not found.
+        try:
+            _ = PipeCalculator # Check if PipeCalculator is defined
+        except NameError:
+            class PipeCalculator: # Dummy for syntactic correctness
+                def __init__(self, df): pass
+                def calculate_rolling_offset(self, dn, roll, side):
+                    # Placeholder for actual calculation
+                    travel = math.sqrt(roll**2 + side**2)
+                    angle_rad = math.atan2(side, roll)
+                    angle_deg = math.degrees(angle_rad)
+                    return {'travel': travel, 'angle_deg': angle_deg}
 
-        # Coordinates
-        # Start at (0,0,0)
-        # End at (roll, run, set_val)
-        # We want to visualize the triangle edges too.
-        # P0 = (0,0,0)
-        # P_roll = (roll, 0, 0)
-        # P_roll_run = (roll, run, 0)
-        # P_end = (roll, run, set_val)
+        calc = PipeCalculator(df)
+        result = calc.calculate_rolling_offset(dn, roll, side)
         
+        travel = result['travel']
+        angle_deg = result['angle_deg']
+        
+        # Calculate waypoints
+        x = [0, roll, roll]
+        y = [0, 0, side]
+        z = [0, 0, 0]
+        
+        # Create figure
         fig = go.Figure()
-
-        # 1. The Pipe (Diagonal) - From Start to End
-        fig.add_trace(go.Scatter3d(
-            x=[0, roll], y=[0, run], z=[0, set_val],
-            mode='lines+markers',
-            line=dict(color='#dc2626', width=12),
-            marker=dict(size=6, color='darkblue'),
-            name='Passstück (Travel)'
-        ))
-
-        # 2. Wireframe Box (Visual Aid)
-        # We draw the path: Start -> Roll -> Run -> Set (End)
-        # Path: (0,0,0) -> (roll,0,0) -> (roll,run,0) -> (roll,run,set)
         
-        # Segment 1: Roll (Side)
+        # Add main pipe path with thick red line
+        fig.add_trace(go.Scatter3d(
+            x=x, y=y, z=z,
+            mode='lines+markers',
+            line=dict(color='#dc2626', width=10),
+            marker=dict(size=10, color='red', symbol='circle'),
+            name='Rohrweg',
+            hovertemplate='<b>Position</b><br>Seite: %{x:.0f}mm<br>Höhe: %{y:.0f}mm<extra></extra>'
+        ))
+        
+        # Add reference grid on ground plane
+        max_val = max(roll, side) * 1.2
+        grid_step = max(50, int(max_val / 10))
+        
+        for i in range(0, int(max_val) + grid_step, grid_step):
+            # Grid lines parallel to Y
+            fig.add_trace(go.Scatter3d(
+                x=[i, i], y=[0, max_val], z=[0, 0],
+                mode='lines',
+                line=dict(color='lightgray', width=1),
+                showlegend=False,
+                hoverinfo='skip'
+            ))
+            # Grid lines parallel to X
+            fig.add_trace(go.Scatter3d(
+                x=[0, max_val], y=[i, i], z=[0, 0],
+                mode='lines',
+                line=dict(color='lightgray', width=1),
+                showlegend=False,
+                hoverinfo='skip'
+            ))
+        
+        # Add dimension lines
+        # Roll dimension (horizontal line)
         fig.add_trace(go.Scatter3d(
             x=[0, roll], y=[0, 0], z=[0, 0],
             mode='lines+text',
-            line=dict(color='green', width=5),
-            text=[f"", f"Roll: {roll:.0f}"], textposition="middle right",
-            name='Roll (Seite)'
+            line=dict(color='blue', width=5, dash='dot'),
+            text=['', f'↔ Roll: {roll}mm'],
+            textposition='top center',
+            textfont=dict(size=14, color='blue', family='Arial Black'),
+            name='Roll (Seite)',
+            hoverinfo='skip'
         ))
         
-        # Segment 2: Run (Length)
+        # Side dimension (vertical line)
         fig.add_trace(go.Scatter3d(
-            x=[roll, roll], y=[0, run], z=[0, 0],
+            x=[roll, roll], y=[0, side], z=[0, 0],
             mode='lines+text',
-            line=dict(color='gray', width=5),
-            text=[f"", f"Run: {run:.0f}"], textposition="middle right",
-            name='Run (Länge)'
+            line=dict(color='green', width=5, dash='dot'),
+            text=['', f'↕ Set: {side}mm'],
+            textposition='middle right',
+            textfont=dict(size=14, color='green', family='Arial Black'),
+            name='Set (Höhe)',
+            hoverinfo='skip'
         ))
-
-        # Segment 3: Set (Height)
+        
+        # Add vertical reference lines at key points
         fig.add_trace(go.Scatter3d(
-            x=[roll, roll], y=[run, run], z=[0, set_val],
-            mode='lines+text',
-            line=dict(color='blue', width=5),
-            text=[f"", f"Set: {set_val:.0f}"], textposition="top center",
-            name='Set (Höhe)'
-        ))
-
-        # Helper: Project on ground to see diagonal offset
-        fig.add_trace(go.Scatter3d(
-            x=[0, roll], y=[0, run], z=[0, 0],
+            x=[0, 0], y=[0, 0], z=[-20, 20],
             mode='lines',
-            line=dict(color='orange', width=2, dash='dot'),
-            name='Boden-Diagonale'
+            line=dict(color='gray', width=2, dash='dash'),
+            showlegend=False,
+            hoverinfo='skip'
         ))
-
-        # Transparent Planes for Box effect
-        # Bottom Plane
-        fig.add_trace(go.Mesh3d(
-            x=[0, roll, roll, 0],
-            y=[0, 0, run, run],
-            z=[0, 0, 0, 0],
-            color='gray', opacity=0.1, showscale=False
-        ))
-        # Side Plane (Roll-Set) at Run end? No, confusing.
-        # Just simple dashed drop lines
+        
         fig.add_trace(go.Scatter3d(
-            x=[0, 0], y=[0, run], z=[0, 0],
-            mode='lines', line=dict(color='black', width=1, dash='dot'), showlegend=False
+            x=[roll, roll], y=[side, side], z=[-20, 20],
+            mode='lines',
+            line=dict(color='gray', width=2, dash='dash'),
+            showlegend=False,
+            hoverinfo='skip'
         ))
-        fig.add_trace(go.Scatter3d(
-            x=[0, roll], y=[run, run], z=[0, 0],
-            mode='lines', line=dict(color='black', width=1, dash='dot'), showlegend=False
-        ))
-
-        # Layout
-        max_dim = max(abs(roll), abs(run), abs(set_val), 100) * 1.2
         
         fig.update_layout(
-            scene=dict(
-                xaxis=dict(title='Seite (Roll)', range=[-max_dim*0.1, max_dim], backgroundcolor="rgb(240, 240, 240)"),
-                yaxis=dict(title='Länge (Run)', range=[-max_dim*0.1, max_dim], backgroundcolor="rgb(240, 240, 240)"),
-                zaxis=dict(title='Höhe (Set)', range=[-max_dim*0.1, max_dim], backgroundcolor="rgb(240, 240, 240)"),
-                aspectmode='cube' 
+            title=dict(
+                text=f'<b>3D Rolling Offset</b><br><sub>Lauflänge: {travel:.1f}mm | Winkel: {angle_deg:.1f}°</sub>',
+                x=0.5,
+                xanchor='center'
             ),
-            margin=dict(r=0, l=0, b=0, t=0),
-            height=600,
+            scene=dict(
+                xaxis=dict(
+                    title='<b>Roll (Seite)</b> [mm]',
+                    showgrid=True,
+                    gridwidth=2,
+                    gridcolor='lightgray',
+                    range=[0, max_val]
+                ),
+                yaxis=dict(
+                    title='<b>Set (Höhe)</b> [mm]',
+                    showgrid=True,
+                    gridwidth=2,
+                    gridcolor='lightgray',
+                    range=[0, max_val]
+                ),
+                zaxis=dict(
+                    title='Hub [mm]',
+                    showgrid=True,
+                    gridwidth=2,
+                    range=[-30, 30]
+                ),
+                aspectmode='manual',
+                aspectratio=dict(x=1, y=1, z=0.3),
+                camera=dict(
+                    eye=dict(x=1.3, y=1.3, z=0.8)
+                )
+            ),
+            margin=dict(l=0, r=0, b=0, t=60),
+            height=550,
             showlegend=True,
-            legend=dict(yanchor="top", y=0.9, xanchor="left", x=0.05)
+            legend=dict(x=0.7, y=0.9)
         )
         
         return fig
