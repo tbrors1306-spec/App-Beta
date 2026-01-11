@@ -413,13 +413,18 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
             if 'calc_res_3d' in st.session_state:
                 res = st.session_state.calc_res_3d
                 st.markdown("**3D Simulation**")
-                fig_3d = Visualizer.plot_rolling_offset_interactive(res['roll_val'], res['run_length'], res['set_val'])
-                if fig_3d:
-                     st.plotly_chart(fig_3d, use_container_width=True)
+                if PLOTLY_AVAILABLE:
+                    try:
+                        fig_3d = Visualizer.plot_rolling_offset_interactive(res['roll_val'], res['set_val'], dn_roll, df)
+                        st.plotly_chart(fig_3d, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Plotly-Fehler: {e}")
+                        fig_3d_fallback = Visualizer.plot_rolling_offset_3d_room(res['roll_val'], res['run_length'], res['set_val'])
+                        st.pyplot(fig_3d_fallback, use_container_width=False)
                 else:
-                     st.warning("Installiere `plotly` um 3D-Ansicht zu sehen.")
-                     fig_static = Visualizer.plot_rolling_offset_3d_room(res['roll_val'], 0, res['set_val'])
-                     st.pyplot(fig_static, use_container_width=False)
+                    st.warning("Installiere `plotly` um 3D-Ansicht zu sehen.")
+                    fig_static = Visualizer.plot_rolling_offset_3d_room(res['roll_val'], 0, res['set_val'])
+                    st.pyplot(fig_static, use_container_width=False)
                 with st.expander("Verdrehung (Wasserwaage)"):
                      fig_gauge = Visualizer.plot_rotation_gauge(res['roll_val'], res['set_val'], res['rot_angle'])
                      st.pyplot(fig_gauge, use_container_width=False)
