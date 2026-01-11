@@ -377,17 +377,22 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 
                 if submit_3d:
                     true_offset = (set_val**2 + roll_val**2)**0.5
-                    rad_angle = (fit_angle * 3.14159) / 180
-                    if rad_angle > 0:
-                        travel_center = true_offset / (true_offset/true_offset if true_offset==0 else 1) # simple fallback
-                        # Re-using calc logic properly
-                        res_roll = calc.calculate_rolling_offset(dn_roll, roll_val, set_val)
-                        travel_center = res_roll['travel']
-                        # need deduction
+                    rad_angle = math.radians(fit_angle)
+                    
+                    if rad_angle > 0 and true_offset > 0:
+                        # Correct calculation for rolling offset with specific elbows
+                        travel_center = true_offset / math.sin(rad_angle)
+                        run_length = true_offset / math.tan(rad_angle)
+                        
+                        # Deduction calculation
                         deduct_single = calc.get_deduction(f"Bogen (Zuschnitt)", dn_roll, "PN 16", fit_angle) 
                         cut_len = travel_center - (2 * deduct_single)
-                        run_length = (travel_center**2 - true_offset**2)**0.5 if travel_center > true_offset else 0
-                        rot_angle = res_roll['angle_calc']
+                        rot_angle = math.degrees(math.atan2(roll_val, set_val))
+                    else:
+                        travel_center = 0
+                        run_length = 0
+                        cut_len = 0
+                        rot_angle = 0
                     
                     st.session_state.calc_res_3d = {
                         "cut_len": cut_len, "travel_center": travel_center, 
@@ -415,7 +420,8 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 st.markdown("**3D Simulation**")
                 if PLOTLY_AVAILABLE:
                     try:
-                        fig_3d = Visualizer.plot_rolling_offset_interactive(res['roll_val'], res['set_val'], dn_roll, df)
+                        # Pass explicit run_length
+                        fig_3d = Visualizer.plot_rolling_offset_interactive(res['roll_val'], res['set_val'], res['run_length'], dn_roll)
                         st.plotly_chart(fig_3d, use_container_width=True)
                     except Exception as e:
                         st.error(f"Plotly-Fehler: {e}")
