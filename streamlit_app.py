@@ -371,7 +371,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 st.markdown("**Eingabe**")
                 with st.form(key="geo_3d_form"):
                     dn_roll = st.selectbox("Nennweite", df['DN'], index=5, key="3d_dn")
-                    fit_angle = st.selectbox("Fitting Typ", [45, 60, 90], index=0, key="3d_ang")
+                    fit_angle = st.number_input("Fitting Winkel (°)", value=45.0, min_value=0.1, max_value=179.9, step=0.5, key="3d_ang")
                     set_val = st.number_input("Versprung Höhe (Set)", value=300.0, min_value=0.0, step=10.0)
                     roll_val = st.number_input("Versprung Seite (Roll)", value=400.0, min_value=0.0, step=10.0)
                     submit_3d = st.form_submit_button("Berechnen 🚀", type="primary", use_container_width=True)
