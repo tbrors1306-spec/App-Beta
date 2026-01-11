@@ -10,7 +10,7 @@ from datetime import datetime
 from modules.database import DatabaseRepository, DB_NAME
 from modules.models import FittingItem, SavedCut
 from modules.calculations import PipeCalculator, MaterialManager, HandbookCalculator
-from modules.utils import Visualizer, Exporter, PDF_AVAILABLE
+from modules.utils import Visualizer, Exporter, PDF_AVAILABLE, PLOTLY_AVAILABLE
 from modules.optimization import CuttingOptimizer, CutRequest
 from modules.ui import init_app_state, render_smart_input, render_sidebar_projects
 
