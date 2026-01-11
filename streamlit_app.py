@@ -339,7 +339,7 @@ def render_geometry_tools(calc: PipeCalculator, df: pd.DataFrame):
                 with st.form(key="geo_2d_form"):
                     dn = st.selectbox("Nennweite", df['DN'], index=5, key="2d_dn")
                     offset = st.number_input("Versprung (H) [mm]", value=500.0, step=10.0, key="2d_off")
-                    angle = st.selectbox("Fittings (°)", [30, 45, 60], index=1, key="2d_ang")
+                    angle = st.number_input("Fittings (°)", value=45.0, min_value=0.1, max_value=90.0, step=0.5, key="2d_ang")
                     submit_2d = st.form_submit_button("Berechnen 🚀", type="primary", use_container_width=True)
                 
                 if submit_2d:
